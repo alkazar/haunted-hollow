@@ -8,6 +8,21 @@ the **Pumpkin King** rises from his pumpkin patch in front of a pair of grand re
 and blocks the track until the riders beat him. Then the doors swing open and the ride rolls out
 through them, down a lantern-lit hall that fades away into darkness, to the score screen.
 
+![Title screen with four players joined](docs/screenshots/title.png)
+
+| | |
+|:---:|:---:|
+| ![The "how to shoot" tutorial with a practice target per player](docs/screenshots/tutorial.png) | ![Popping ghosts and bats in the graveyard](docs/screenshots/graveyard.png) |
+| Everyone pops a practice target before the countdown | The graveyard |
+| ![The grand foyer](docs/screenshots/foyer.png) | ![The haunted library](docs/screenshots/library.png) |
+| The grand foyer | The haunted library |
+| ![The dining hall](docs/screenshots/dining-hall.png) | ![Plunging down the big drop](docs/screenshots/drop.png) |
+| The dining hall | The big drop |
+| ![The misty green crypt](docs/screenshots/crypt.png) | ![Four players battling the Pumpkin King](docs/screenshots/boss.png) |
+| The creepy crypt | The Pumpkin King |
+| ![The score screen with awards](docs/screenshots/results.png) | |
+| Scores and awards | |
+
 Nobody can lose: there is no health and no game over, just a score per player and a fun
 award on the results screen ("GHOST CATCHER", "BAT BOPPER", "BOSS BUSTER"...).
 
