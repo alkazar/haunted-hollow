@@ -214,8 +214,8 @@ impl Models {
             spider: spider(),
             book_half: [book_half(0x8a1e22), book_half(0x1e3a8a), book_half(0x2a6a2a)],
             candy: candy(),
-            boss_head: boss_head(0xffe84a),
-            boss_head_angry: boss_head(0xff2a1a),
+            boss_head: boss_head(0xfff6a8),
+            boss_head_angry: boss_head(0xff4a2a),
             boss_cape: boss_cape(),
             door: [door_leaf(false), door_leaf(true)],
             boss_hand: Model::build(5, 5, 4, 0.42, |x, y, z| {
@@ -288,7 +288,8 @@ fn bat_body() -> Model {
 
 fn pumpkin() -> Model {
     // Jack-o'-lantern with a glowing carved face.
-    const FACE: [&str; 7] = ["........", ".#....#.", ".######.", "........", "...##...", ".##..##.", ".###.##."];
+    // Face rows from the top of the pumpkin down: eyes, nose, then a big grin.
+    const FACE: [&str; 7] = ["........", ".##..##.", ".##..##.", "...##...", ".#....#.", "..####..", "........"];
     Model::build(8, 9, 8, 0.16, |x, y, z| {
         if y >= 7 {
             return if (x == 3 || x == 4) && (z == 3 || z == 4) && (y == 7 || x == 4) {
@@ -391,26 +392,30 @@ fn candy() -> Model {
 }
 
 fn boss_head(glow: u32) -> Model {
+    // Classic jack-o'-lantern face (top row first): pointed eyes, a nose and a big
+    // grin with two teeth, on plenty of orange so it reads clearly.
     const FACE: [&str; 13] = [
         "...............",
         "...............",
-        "...............",
-        "...##.....##...",
-        "..####...####..",
-        "..#####.#####..",
+        "...#.......#...",
+        "..###.....###..",
+        ".#####...#####.",
         "...............",
         "......###......",
-        ".##.........##.",
-        ".#############.",
-        "..###.###.###..",
-        "....#######....",
+        "...............",
+        ".#...........#.",
+        ".###.#####.###.",
+        "..###########..",
+        "...............",
         "...............",
     ];
+    // A rounded cube (like a Minecraft pumpkin) so the carved face sits on a flat
+    // front panel and stays crisp, even seen from below.
     let inside = |x: i32, y: i32, z: i32| -> bool {
-        let dx = (x as f32 - 7.0) / 7.6;
-        let dy = (y as f32 - 6.0) / 6.6;
-        let dz = (z as f32 - 7.0) / 7.6;
-        dx * dx + dy * dy + dz * dz <= 1.0
+        let dx = ((x as f32 - 7.0) / 7.5).abs();
+        let dy = ((y as f32 - 6.0) / 6.5).abs();
+        let dz = ((z as f32 - 7.0) / 7.5).abs();
+        dx.powi(4) + dy.powi(4) + dz.powi(4) <= 1.0
     };
     let front_z = move |x: i32, y: i32| -> i32 { (0..15).rev().find(|&z| inside(x, y, z)).unwrap_or(-1) };
     Model::build(15, 17, 15, 0.5, move |x, y, z| {
@@ -439,18 +444,17 @@ fn boss_head(glow: u32) -> Model {
         let row = 12 - y;
         let carved = row >= 0 && row < 13 && FACE[row as usize].as_bytes()[x as usize] == b'#';
         let fz = front_z(x, y);
-        if carved && z == fz {
-            return None;
-        }
-        if carved && z == fz - 1 {
+        // The face glows flush on the flat front (like a Minecraft carved pumpkin),
+        // so its shapes stay crisp from any angle, even looking up at him.
+        if carved && (z == fz || z == fz - 1) {
             return vox(glow, 1.0);
         }
         let ang = (z as f32 - 7.0).atan2(x as f32 - 7.0);
         let ridge = ((ang / std::f32::consts::TAU * 10.0).rem_euclid(1.0)) < 0.22;
         if ridge {
-            vox(0xc0580e, 0.3)
+            vox(0x9a420a, 0.15)
         } else {
-            vox(0xf0841a, 0.3)
+            vox(0xd0661a, 0.15)
         }
     })
 }

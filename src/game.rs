@@ -216,6 +216,8 @@ pub struct Game {
     /// How many of each kind actually appeared this ride (for testing).
     pub spawn_kinds: [u32; 7],
     lane: usize,
+    /// Fireplace and brazier flames, animated every frame.
+    fires: Vec<Vec3>,
     /// How far the boss doors are open (0 shut .. 1 wide open).
     door_open: f32,
     retries: Vec<(f32, Kind, u64, u32)>,
@@ -333,10 +335,12 @@ impl Game {
             spawn_kinds: [0; 7],
             lane: 0,
             door_open: 0.0,
+            fires: vec![],
             retries: vec![],
             cam_dir: Vec3::Z,
             cam_up: Vec3::Y,
         };
+        g.fires = g.world.fire_cells();
         for k in 0..bots.min(4) {
             g.players[k as usize].joined = true;
             g.players[k as usize].source = Some(SourceId::Bot(k));
@@ -593,9 +597,9 @@ impl Game {
     fn ghost_substitute(zone: Zone, rng: &mut Rng) -> Kind {
         let pool: &[Kind] = match zone {
             Zone::Graveyard => &[Kind::Bat, Kind::Pumpkin],
-            Zone::Foyer => &[Kind::Bat, Kind::Spider, Kind::Book],
+            Zone::Foyer => &[Kind::Bat, Kind::Spider],
             Zone::Library => &[Kind::Book, Kind::Bat, Kind::Spider],
-            Zone::Dining => &[Kind::Skeleton, Kind::Bat, Kind::Book],
+            Zone::Dining => &[Kind::Skeleton, Kind::Bat, Kind::Spider],
             Zone::Drop | Zone::Crypt => &[Kind::Spider, Kind::Skeleton, Kind::Bat],
             Zone::Lair => &[Kind::Pumpkin, Kind::Bat],
         };
@@ -786,10 +790,11 @@ impl Game {
             }
         }
         // Must stay in open air for its whole life (finer steps for flyers).
+        // Flying books belong to the library and never leave it.
         let steps = if matches!(kind, Kind::Bat | Kind::Candy) { 10 } else { 6 };
         for i in 0..=steps {
             let p = Self::motion(&t, t.life * i as f32 / steps as f32);
-            if !self.body_clear(kind, p) {
+            if !self.body_clear(kind, p) || (kind == Kind::Book && zone_at(p) != Zone::Library) {
                 return None;
             }
         }
@@ -1333,10 +1338,11 @@ impl Game {
             self.burst(t.pos, if t.kind == Kind::Candy { 40 } else { 22 }, color, t.kind == Kind::Ghost);
             let pan = (aim.x / self.screen.x * 2.0 - 1.0) * 0.8;
             self.sfx(Sfx::Pop, 0.7, pan, 0.9 + pi as f32 * 0.12);
+            // Every normal enemy pops with the same "poof" as the ghost; the golden
+            // candy keeps its special bonus jingle.
             match t.kind {
                 Kind::Candy => self.sfx(Sfx::Bonus, 0.7, pan, 1.0),
-                Kind::Ghost => self.sfx(Sfx::Poof, 0.5, pan, 1.0),
-                _ => {}
+                _ => self.sfx(Sfx::Poof, 0.5, pan, 1.0),
             }
             if let Some(src) = self.players[pi].source {
                 self.rumble_requests.push((src, 80));
@@ -1522,6 +1528,39 @@ impl Game {
 
     pub fn draw_world(&self, out: &mut Vec<Vertex>) {
         let m = &self.models;
+        // Flickering flames in the fireplace and the braziers.
+        let t = self.total_t;
+        for (i, &f) in self.fires.iter().enumerate() {
+            if f.distance(self.cam) > 70.0 {
+                continue;
+            }
+            let seed = i as f32 * 1.7;
+            // Five flame tongues across the block, each dancing at its own pace.
+            for k in 0..5 {
+                let ph = seed + k as f32 * 2.3;
+                let ox = (k as f32 - 2.0) * 0.17 + (t * 3.1 + ph).sin() * 0.04;
+                let oz = ((k * 7 % 5) as f32 - 2.0) * 0.12;
+                let h = 0.45 + 0.28 * (t * 7.3 + ph).sin().abs() + 0.12 * (t * 13.7 + ph * 1.3).sin();
+                let w = 0.2 + 0.04 * (t * 9.0 + ph).sin();
+                let sway = (t * 4.0 + ph).sin() * 0.05;
+                let base = f + Vec3::new(ox, 0.0, oz);
+                // Orange body, then a yellow tip.
+                let body = Mat4::from_translation(base + Vec3::new(sway * 0.5, h * 0.35, 0.0)) * Mat4::from_scale(Vec3::new(w, h * 0.7, w));
+                push_box(out, &body, T_WHITE, [1.0, 0.42, 0.06], Vec3::ONE, 1.0);
+                let tip = Mat4::from_translation(base + Vec3::new(sway, h * 0.8, 0.0)) * Mat4::from_scale(Vec3::new(w * 0.6, h * 0.4, w * 0.6));
+                push_box(out, &tip, T_WHITE, [1.0, 0.86, 0.32], Vec3::ONE, 1.0);
+            }
+            // A couple of embers drifting up and fading.
+            for k in 0..3 {
+                let ph = seed * 3.1 + k as f32 * 1.9;
+                let u = (t * 0.7 + ph * 0.37).fract();
+                let p = f + Vec3::new((ph * 5.0).sin() * 0.3 + (t * 2.0 + ph).sin() * 0.08, 0.5 + u * 1.4, (ph * 3.0).cos() * 0.25);
+                let s = 0.07 * (1.0 - u);
+                let e = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s));
+                push_box(out, &e, T_WHITE, [1.0, 0.6 - 0.3 * u, 0.15], Vec3::ONE, 1.0);
+            }
+        }
+
         // The grand doors behind the Pumpkin King (each leaf swings into the hall).
         if self.camera_near_lair() {
             let swing = self.door_open * 1.75;
@@ -1649,8 +1688,12 @@ impl Game {
                 let light = Vec3::splat(0.95);
                 let rage = 1.0 - b.hp / b.max_hp;
                 let model = if rage > 0.5 { &m.boss_head_angry } else { &m.boss_head };
+                // Tip the head down toward the riders so his face looks at them.
+                let horiz = Vec2::new(to_cam.x, to_cam.z).length().max(0.1);
+                let pitch = ((head.y - self.cam.y) / horiz).atan().clamp(0.0, 0.6);
                 let hm = Mat4::from_translation(head)
                     * Mat4::from_rotation_y(yaw)
+                    * Mat4::from_rotation_x(pitch)
                     * Mat4::from_rotation_z(wob + (b.t * 1.3).sin() * 0.06)
                     * Mat4::from_scale(Vec3::splat(s))
                     * Mat4::from_translation(-Vec3::Y * 3.2);

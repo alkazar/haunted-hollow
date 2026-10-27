@@ -196,6 +196,21 @@ impl World {
         }
     }
 
+    /// Positions (block bottom centres) of every fire block, for the animated flames.
+    pub fn fire_cells(&self) -> Vec<Vec3> {
+        let mut out = vec![];
+        for z in Z0..Z1 {
+            for y in Y0..Y1 {
+                for x in X0..X1 {
+                    if self.get(x, y, z) == b::FIRE {
+                        out.push(Vec3::new(x as f32 + 0.5, y as f32, z as f32 + 0.5));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn solid_at(&self, p: Vec3) -> bool {
         props(self.get(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)).opaque
     }
@@ -537,6 +552,8 @@ impl World {
                     push_box(out, &m(pos, Vec3::splat(0.08 + k as f32 * 0.02)), T_SLIME, [1.0; 3], light, 1.0);
                 }
             }
+            // Fire is animated by the game each frame (see `fire_cells`), not baked in.
+            Shape::Cross if id == b::FIRE => {}
             Shape::Cross => {
                 let uv = tile_uv(p.tiles[1]);
                 let col = if p.glow { [1.0, 1.0, 1.0, 0.0] } else { [light.x, light.y, light.z, 1.0] };
@@ -1248,8 +1265,12 @@ fn carve(w: &mut World, track: &Track) {
 }
 
 fn after_carve(w: &mut World, track: &Track) {
-    // Wooden trestles under elevated track sections.
+    // Wooden trestles under elevated track sections (not on the steep drop, where a
+    // post under one sample would poke up through the rails just ahead of it).
     for f in track.samples(2.0) {
+        if f.fwd.y.abs() > 0.5 {
+            continue;
+        }
         let (x, z) = (f.pos.x.floor() as i32, f.pos.z.floor() as i32);
         let mut y = (f.pos.y - 0.05).floor() as i32 - 1;
         if !w.is_air(x, y, z) {
