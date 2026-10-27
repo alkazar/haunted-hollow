@@ -3,6 +3,7 @@
 
 use crate::atlas::*;
 use crate::audio::{Music, Sfx, SoundEvent};
+use crate::highscores::{HighScores, MAX_INITIALS};
 use crate::hud::{Align, Ui};
 use crate::mesh::{hash3, push_box, push_box_tiles, push_quad, Models, FACES};
 use crate::rng::Rng;
@@ -100,6 +101,24 @@ const BOSS_COUNT: usize = 8;
 /// Seconds a haunted portrait spends peeling off its wall before it flies.
 const PORTRAIT_PEEL: f32 = 0.8;
 
+/// Keys of the shootable letter grid: A-Z, then delete and done.
+const KEYS: [&str; 28] = [
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V",
+    "W", "X", "Y", "Z", "DEL", "END",
+];
+const KEY_DEL: usize = 26;
+const KEY_END: usize = 27;
+const KEY_COLS: usize = 7;
+/// How long riders get to enter their initials before the rest are filled in.
+const INITIALS_SECONDS: f32 = 45.0;
+
+#[derive(Clone, Default)]
+struct Initials {
+    letters: String,
+    /// When (in `state_t`) this rider shot END.
+    done_at: Option<f32>,
+}
+
 struct Target {
     kind: Kind,
     home: Vec3,
@@ -193,6 +212,10 @@ pub enum State {
     Victory,
     Outro,
     Results,
+    /// Riders who made the high-score table shoot the letters of their initials.
+    Initials,
+    /// The high-score table, before going back to the title.
+    HighScores,
 }
 
 struct Boss {
@@ -244,6 +267,14 @@ pub struct Game {
     /// How far the boss doors are open (0 shut .. 1 wide open).
     door_open: f32,
     retries: Vec<(f32, Kind, u64, u32)>,
+    high: HighScores,
+    high_path: Option<std::path::PathBuf>,
+    /// Initials being entered by each rider who made the table this round.
+    initials: [Option<Initials>; 4],
+    /// When each key of the letter grid was last shot, and by whom.
+    key_flash: [(f32, usize); KEYS.len()],
+    /// Rows of the table that are new this round, and whose they are.
+    high_new: Vec<(usize, usize)>,
     cam_dir: Vec3,
     cam_up: Vec3,
     pub state: State,
@@ -366,6 +397,11 @@ impl Game {
             clouds: cloud_runs(),
             mist: vec![],
             retries: vec![],
+            high: HighScores::default(),
+            high_path: None,
+            initials: Default::default(),
+            key_flash: [(-9.0, 0); KEYS.len()],
+            high_new: vec![],
             cam_dir: Vec3::Z,
             cam_up: Vec3::Y,
         };
@@ -377,6 +413,12 @@ impl Game {
             g.players[k as usize].source = Some(SourceId::Bot(k));
         }
         g
+    }
+
+    /// Loads the high-score table from `path` and saves it back there after each round.
+    pub fn set_high_score_file(&mut self, path: std::path::PathBuf) {
+        self.high = HighScores::load(&path);
+        self.high_path = Some(path);
     }
 
     fn joined_count(&self) -> usize {
@@ -417,6 +459,127 @@ impl Game {
             p.reset_score();
         }
         self.build_schedule();
+    }
+
+    /// Riders (player indices) whose score this round makes the high-score table.
+    /// Computer players never count.
+    fn high_score_riders(&self) -> Vec<usize> {
+        let scores: Vec<u32> = self
+            .players
+            .iter()
+            .map(|p| if p.joined && !matches!(p.source, Some(SourceId::Bot(_))) { p.score } else { 0 })
+            .collect();
+        self.high.qualifiers(&scores)
+    }
+
+    /// From the results: riders who made the table enter their initials, otherwise
+    /// straight on to the table (or the title if there isn't one yet).
+    fn leave_results(&mut self) {
+        let made_it = self.high_score_riders();
+        self.high_new.clear();
+        self.state_t = 0.0;
+        if !made_it.is_empty() {
+            self.initials = Default::default();
+            for i in made_it {
+                self.initials[i] = Some(Initials::default());
+            }
+            self.key_flash = [(-9.0, 0); KEYS.len()];
+            self.state = State::Initials;
+        } else if !self.high.entries.is_empty() {
+            self.state = State::HighScores;
+        } else {
+            self.go_to_title();
+        }
+    }
+
+    /// Puts everyone's initials into the table (riders who didn't finish keep what they
+    /// shot, or get "P1".."P4"), saves it and shows it.
+    fn finish_initials(&mut self) {
+        let mut order: Vec<usize> = (0..4).filter(|&i| self.initials[i].is_some()).collect();
+        // Best first, so a later insert never pushes an earlier one down.
+        order.sort_by(|&a, &b| self.players[b].score.cmp(&self.players[a].score));
+        for i in order {
+            let letters = self.initials[i].take().map(|e| e.letters).unwrap_or_default();
+            let name = if letters.is_empty() { format!("P{}", i + 1) } else { letters };
+            if let Some(rank) = self.high.insert(self.players[i].score, &name) {
+                self.high_new.push((rank, i));
+            }
+        }
+        if let Some(path) = &self.high_path {
+            if let Err(e) = self.high.save(path) {
+                eprintln!("could not save high scores to {}: {e}", path.display());
+            }
+        }
+        self.state = State::HighScores;
+        self.state_t = 0.0;
+    }
+
+    fn go_to_title(&mut self) {
+        self.state = State::Title;
+        self.state_t = 0.0;
+        self.title_join_t = None;
+        // Back on the title screen every rider has to press A again to join.
+        for p in self.players.iter_mut() {
+            if matches!(p.source, Some(SourceId::Bot(_))) {
+                continue;
+            }
+            p.joined = false;
+            p.aim_visible = false;
+            if matches!(p.source, Some(SourceId::Wii(_))) {
+                p.source = None;
+            }
+        }
+    }
+
+    /// Screen rectangles (x, y, w, h) of the letter grid's keys, in `KEYS` order.
+    fn key_rects(&self) -> Vec<(f32, f32, f32, f32)> {
+        let (w, h) = (self.screen.x, self.screen.y);
+        let unit = (h / 240.0).max(1.0);
+        let rows = KEYS.len().div_ceil(KEY_COLS);
+        let gap = 4.0 * unit;
+        let cell = ((w * 0.84 - gap * (KEY_COLS - 1) as f32) / KEY_COLS as f32).min((h * 0.46 - gap * (rows - 1) as f32) / rows as f32);
+        let gw = cell * KEY_COLS as f32 + gap * (KEY_COLS - 1) as f32;
+        let (x0, y0) = ((w - gw) * 0.5, h * 0.2);
+        (0..KEYS.len()).map(|k| (x0 + (k % KEY_COLS) as f32 * (cell + gap), y0 + (k / KEY_COLS) as f32 * (cell + gap), cell, cell)).collect()
+    }
+
+    fn key_at(&self, p: Vec2) -> Option<usize> {
+        self.key_rects().iter().position(|&(x, y, w, h)| p.x >= x && p.x < x + w && p.y >= y && p.y < y + h)
+    }
+
+    /// A rider shot at the letter grid: add a letter, delete one, or finish.
+    fn initials_shot(&mut self, pi: usize, aim: Vec2) {
+        // (Ignore the press that left the results screen.)
+        if self.state_t < 0.6 {
+            return;
+        }
+        let Some(k) = self.key_at(aim) else { return };
+        let now = self.state_t;
+        let Some(e) = self.initials[pi].as_mut().filter(|e| e.done_at.is_none()) else { return };
+        let ok = match k {
+            KEY_DEL => e.letters.pop().is_some(),
+            KEY_END if !e.letters.is_empty() => {
+                e.done_at = Some(now);
+                true
+            }
+            KEY_END => false,
+            _ if e.letters.len() < MAX_INITIALS => {
+                e.letters.push_str(KEYS[k]);
+                true
+            }
+            _ => false,
+        };
+        let pan = (aim.x / self.screen.x * 2.0 - 1.0) * 0.8;
+        if ok {
+            self.key_flash[k] = (self.total_t, pi);
+            let sfx = if k == KEY_END { Sfx::Ding } else { Sfx::Pop };
+            self.sfx(sfx, 0.6, pan, 0.9 + pi as f32 * 0.12);
+            if let Some(src) = self.players[pi].source {
+                self.rumble_requests.push((src, 60));
+            }
+        } else {
+            self.sfx(Sfx::Bonk, 0.4, pan, 1.0);
+        }
     }
 
     /// Debug helper: jump straight to the boss.
@@ -1008,7 +1171,7 @@ impl Game {
             State::Ride => Music::Ride,
             State::Boss => Music::Boss,
             State::Victory | State::Outro => Music::Victory,
-            State::Results => Music::Results,
+            State::Results | State::Initials | State::HighScores => Music::Results,
         })
     }
 
@@ -1157,20 +1320,20 @@ impl Game {
                 }
                 let go = inputs.iter().any(|i| i.join || i.start || i.fire_pressed);
                 if (go && self.state_t > 4.0) || self.state_t > 45.0 || (self.bots > 0 && self.state_t > 6.0) {
-                    self.state = State::Title;
-                    self.state_t = 0.0;
-                    self.title_join_t = None;
-                    // Back on the title screen every rider has to press A again to join.
-                    for p in self.players.iter_mut() {
-                        if matches!(p.source, Some(SourceId::Bot(_))) {
-                            continue;
-                        }
-                        p.joined = false;
-                        p.aim_visible = false;
-                        if matches!(p.source, Some(SourceId::Wii(_))) {
-                            p.source = None;
-                        }
-                    }
+                    self.leave_results();
+                }
+            }
+            State::Initials => {
+                let entering: Vec<&Initials> = self.initials.iter().flatten().collect();
+                let last = entering.iter().try_fold(0.0f32, |m, e| e.done_at.map(|d| m.max(d)));
+                if last.map_or(false, |l| self.state_t - l > 0.8) || self.state_t > INITIALS_SECONDS {
+                    self.finish_initials();
+                }
+            }
+            State::HighScores => {
+                let go = inputs.iter().any(|i| i.join || i.start || i.fire_pressed);
+                if (go && self.state_t > 2.0) || self.state_t > 12.0 || (self.bots > 0 && self.state_t > 5.0) {
+                    self.go_to_title();
                 }
             }
         }
@@ -1354,7 +1517,9 @@ impl Game {
                 let t = self.state_t;
                 (self.track.stop_dist + OUTRO_ACCEL * t * t, 2.0 * OUTRO_ACCEL * t)
             }
-            State::Results => (self.track.stop_dist + OUTRO_ACCEL * OUTRO_TIME * OUTRO_TIME, 0.0),
+            State::Results | State::Initials | State::HighScores => {
+                (self.track.stop_dist + OUTRO_ACCEL * OUTRO_TIME * OUTRO_TIME, 0.0)
+            }
         };
         let f = self.track.frame_at(d);
         let (mut eye, mut dir, mut up) = self.pose_at(d, speed);
@@ -1410,7 +1575,7 @@ impl Game {
         let mut rate = 1.5;
         // Once the boss doors open, the hall beyond fades away into pure darkness.
         let doors_opening = self.state == State::Victory && self.state_t > DOOR_START;
-        if doors_opening || matches!(self.state, State::Outro | State::Results) {
+        if doors_opening || matches!(self.state, State::Outro | State::Results | State::Initials | State::HighScores) {
             fc = [0.0, 0.0, 0.0];
             fr = if self.state == State::Victory { (22.0, 72.0) } else { (8.0, 36.0) };
             rate = if self.state == State::Victory { 1.5 } else { 2.5 };
@@ -1443,7 +1608,9 @@ impl Game {
     }
 
     fn handle_shooting(&mut self, inputs: &[SourceInput], dt: f32) {
-        let can_shoot = matches!(self.state, State::Tutorial | State::Ride | State::Boss);
+        let can_shoot = matches!(self.state, State::Tutorial | State::Ride | State::Boss | State::Initials);
+        // Typing initials is one letter per pull of the trigger: no auto-fire.
+        let can_auto = self.state != State::Initials;
         for i in 0..4 {
             let src = self.players[i].source;
             let (fire_pressed, fire_held) = match src {
@@ -1468,7 +1635,7 @@ impl Game {
             } else {
                 p.held = 0.0;
             }
-            let auto = fire_held && p.held > 0.35 && p.cooldown <= 0.0;
+            let auto = can_auto && fire_held && p.held > 0.35 && p.cooldown <= 0.0;
             if !(p.joined && p.aim_visible && can_shoot && (fire_pressed || auto) && p.cooldown <= 0.0) {
                 continue;
             }
@@ -1484,6 +1651,10 @@ impl Game {
 
     fn shoot(&mut self, pi: usize, aim: Vec2) {
         let color = PLAYER_COLORS[pi];
+        if self.state == State::Initials {
+            self.initials_shot(pi, aim);
+            return;
+        }
         if self.state == State::Tutorial {
             // Each player can only pop their own practice target.
             if self.practice[pi].is_none() && aim.distance(self.practice_pos(pi)) <= self.practice_radius() {
@@ -2055,6 +2226,8 @@ impl Game {
             State::Title => self.draw_title(ui),
             State::Tutorial => self.draw_tutorial(ui),
             State::Results => self.draw_results(ui),
+            State::Initials => self.draw_initials(ui),
+            State::HighScores => self.draw_high_scores(ui),
             _ => {}
         }
 
@@ -2103,9 +2276,13 @@ impl Game {
         }
 
         // Crosshairs on top of everything.
-        if !matches!(self.state, State::Outro | State::Results) {
+        if !matches!(self.state, State::Outro | State::Results | State::HighScores) {
             for (i, p) in self.players.iter().enumerate() {
                 if !p.aim_visible || (!p.joined && self.state != State::Title) {
+                    continue;
+                }
+                // Only riders still entering initials aim at the letter grid.
+                if self.state == State::Initials && !self.initials[i].as_ref().map_or(false, |e| e.done_at.is_none()) {
                     continue;
                 }
                 let c = PLAYER_COLORS[i];
@@ -2178,6 +2355,10 @@ impl Game {
         ui.rect(0.0, h * 0.1, w, 52.0 * unit, [0.0, 0.0, 0.0, 0.35]);
         ui.text_fit("HAUNTED HOLLOW", w * 0.5, h * 0.12 + bob, 5.0, w * 0.92, [1.0, 0.55, 0.08, 1.0], Align::Center);
         ui.text_fit("THE SPOOKY COASTER RIDE", w * 0.5, h * 0.12 + 46.0 * unit, 1.5, w * 0.9, [0.75, 0.55, 1.0, 1.0], Align::Center);
+        if let Some(best) = self.high.entries.first() {
+            let line = format!("TOP SCORE  {}  {}", best.initials, best.score);
+            ui.text_fit(&line, w * 0.5, h * 0.12 + 62.0 * unit, 1.1, w * 0.9, [1.0, 0.82, 0.2, 1.0], Align::Center);
+        }
 
         // Four player cards in a row; every line is fitted to its card.
         let pw = w / 4.0;
@@ -2376,6 +2557,7 @@ impl Game {
         let col_name = rw * 0.43;
         let col_score = rw - col_medal - col_name - pad * 3.0;
         let line = row_h / (8.0 * unit); // font scale that fills the row height
+        let made_it = self.high_score_riders();
         for (rank, &i) in order.iter().enumerate() {
             let appear = smooth((self.state_t - 0.4 * (order.len() - rank) as f32) / 0.4);
             if appear <= 0.0 {
@@ -2403,8 +2585,138 @@ impl Game {
             let stats = format!("{} POPS {}% AIM", p.hits, acc);
             let sts = (line * 0.18).min(col_score / ui.text_width(&stats, 1.0));
             ui.text(&stats, rx, y + row_h * 0.68, sts, [0.85, 0.85, 0.9, appear], Align::Right);
+            // A flashing tag across the top edge of the card for a new high score.
+            if made_it.contains(&i) {
+                let tag = "NEW HIGH SCORE!";
+                let ts = (line * 0.16).max(0.6);
+                let (tw, th) = (ui.text_width(tag, ts) + 8.0 * unit, 8.0 * ts * unit + 4.0 * unit);
+                let tx = x + rw * 0.5 - tw * 0.5;
+                let ty = y - th * 0.5;
+                let k = 0.75 + 0.25 * (self.state_t * 6.0).sin();
+                ui.panel(tx, ty, tw, th, [1.0 * k, 0.5 * k, 0.05, appear], [1.0, 0.9, 0.4, appear]);
+                ui.text(tag, x + rw * 0.5, ty + 2.0 * unit, ts, [1.0, 1.0, 1.0, appear], Align::Center);
+            }
         }
         if self.state_t > 4.0 && (self.state_t * 2.0) as i32 % 2 == 0 {
+            let msg = match (made_it.is_empty(), self.debug) {
+                (false, true) => "CLICK TO ENTER YOUR HIGH SCORE!",
+                (false, false) => "PRESS A TO ENTER YOUR HIGH SCORE!",
+                (true, true) => "CLICK TO RIDE AGAIN!",
+                (true, false) => "PRESS A TO RIDE AGAIN!",
+            };
+            ui.text_fit(msg, w * 0.5, h * 0.9, 1.5, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
+        }
+    }
+
+    fn draw_initials(&self, ui: &mut Ui) {
+        let (w, h, unit) = (ui.w, ui.h, ui.unit);
+        let t = self.state_t;
+        ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.94]);
+        let pulse = 1.0 + 0.04 * (t * 5.0).sin();
+        ui.text_fit("NEW HIGH SCORE!", w * 0.5, h * 0.04, 2.6 * pulse, w * 0.9, [1.0, 0.55, 0.08, 1.0], Align::Center);
+        let how = if self.debug { "CLICK THE LETTERS OF YOUR NAME, THEN END" } else { "SHOOT THE LETTERS OF YOUR NAME, THEN END" };
+        ui.text_fit(how, w * 0.5, h * 0.04 + 26.0 * unit, 1.0, w * 0.9, [0.85, 0.85, 0.95, 1.0], Align::Center);
+        let left = (INITIALS_SECONDS - t).max(0.0).ceil();
+        if left <= 15.0 {
+            ui.text(&format!("{left:.0}"), w - 6.0 * unit, h * 0.04, 1.6, [1.0, 0.4, 0.3, 1.0], Align::Right);
+        }
+
+        // The letter grid. A key lights up in the colour of whoever is aiming at it.
+        let entering = |i: usize| self.initials[i].as_ref().map_or(false, |e| e.done_at.is_none());
+        for (k, &(x, y, cw, ch)) in self.key_rects().iter().enumerate() {
+            let over = (0..4).find(|&i| {
+                let a = self.players[i].aim;
+                entering(i) && self.players[i].aim_visible && a.x >= x && a.x < x + cw && a.y >= y && a.y < y + ch
+            });
+            let (ft, fp) = self.key_flash[k];
+            let flash = (1.0 - (self.total_t - ft) / 0.3).max(0.0);
+            let fc = PLAYER_COLORS[fp];
+            let mut fill = [0.12 + fc[0] * 0.6 * flash, 0.06 + fc[1] * 0.6 * flash, 0.18 + fc[2] * 0.6 * flash, 0.95];
+            let border = match over {
+                Some(i) => {
+                    let c = PLAYER_COLORS[i];
+                    fill = [fill[0] + c[0] * 0.15, fill[1] + c[1] * 0.15, fill[2] + c[2] * 0.15, 0.95];
+                    [c[0], c[1], c[2], 1.0]
+                }
+                None => [0.5, 0.32, 0.7, 1.0],
+            };
+            ui.panel(x, y, cw, ch, fill, border);
+            ui.panel(x + unit, y + unit, cw - 2.0 * unit, ch - 2.0 * unit, fill, border);
+            let label = KEYS[k];
+            let col = match k {
+                KEY_DEL => [1.0, 0.45, 0.4, 1.0],
+                KEY_END => [0.45, 1.0, 0.5, 1.0],
+                _ => [1.0, 1.0, 1.0, 1.0],
+            };
+            let sc = (ch * 0.5 / (8.0 * unit)).min(cw * 0.8 / ui.text_width(label, 1.0));
+            ui.text(label, x + cw * 0.5, y + (ch - 8.0 * sc * unit) * 0.5, sc, col, Align::Center);
+        }
+
+        // Each rider's initials so far, in their score-card column.
+        let pw = w / 4.0;
+        let pad = 3.0 * unit;
+        let ph = 42.0 * unit;
+        for (i, e) in self.initials.iter().enumerate() {
+            let Some(e) = e else { continue };
+            let c = PLAYER_COLORS[i];
+            let (x, bw, y) = (i as f32 * pw + pad, pw - pad * 2.0, h - ph - pad);
+            ui.panel(x, y, bw, ph, [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25, 0.9], [c[0], c[1], c[2], 1.0]);
+            let head = format!("P{}  {}", i + 1, self.players[i].score);
+            ui.text_fit(&head, x + bw * 0.5, y + 4.0 * unit, 1.0, bw - 6.0 * unit, [c[0], c[1], c[2], 1.0], Align::Center);
+            let (sw, sg) = ((14.0 * unit).min(bw / 4.0), 3.0 * unit);
+            let sx = x + (bw - (sw * 3.0 + sg * 2.0)) * 0.5;
+            let sy = y + 15.0 * unit;
+            for k in 0..MAX_INITIALS {
+                let bx = sx + k as f32 * (sw + sg);
+                ui.rect(bx, sy, sw, sw, [0.0, 0.0, 0.0, 0.5]);
+                if let Some(ch) = e.letters.get(k..k + 1) {
+                    let sc = sw * 0.7 / (8.0 * unit);
+                    ui.text(ch, bx + sw * 0.5, sy + (sw - 8.0 * sc * unit) * 0.5, sc, [1.0, 1.0, 1.0, 1.0], Align::Center);
+                } else if k == e.letters.len() && e.done_at.is_none() && (t * 3.0) as i32 % 2 == 0 {
+                    ui.rect(bx + 2.0 * unit, sy + sw - 3.0 * unit, sw - 4.0 * unit, 2.0 * unit, [c[0], c[1], c[2], 1.0]);
+                }
+            }
+            if e.done_at.is_some() {
+                ui.text_fit("DONE!", x + bw * 0.5, y + ph - 10.0 * unit, 1.0, bw - 6.0 * unit, [1.0, 1.0, 1.0, 1.0], Align::Center);
+            }
+        }
+    }
+
+    fn draw_high_scores(&self, ui: &mut Ui) {
+        let (w, h, unit) = (ui.w, ui.h, ui.unit);
+        let t = self.state_t;
+        ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.94]);
+        ui.text_fit("HIGH SCORES", w * 0.5, h * 0.05, 2.8, w * 0.9, [1.0, 0.55, 0.08, 1.0], Align::Center);
+        let top = h * 0.17;
+        let row_h = h * 0.68 / crate::highscores::TABLE_SIZE as f32;
+        let sc = (row_h * 0.62 / (8.0 * unit)).min(w * 0.6 / ui.text_width("10.  AAA  0000000", 1.0));
+        let (x_rank, x_name, x_score) = (w * 0.5 - 15.0 * 8.0 * sc * unit * 0.5, w * 0.5 - 5.0 * 8.0 * sc * unit * 0.5, w * 0.5 + 15.0 * 8.0 * sc * unit * 0.5);
+        for (rank, e) in self.high.entries.iter().enumerate() {
+            let a = smooth((t - 0.08 * rank as f32) / 0.3);
+            if a <= 0.0 {
+                continue;
+            }
+            let y = top + rank as f32 * row_h + (row_h - 8.0 * sc * unit) * 0.5;
+            let new = self.high_new.iter().find(|n| n.0 == rank).map(|n| n.1);
+            let col = match new {
+                Some(i) => {
+                    let c = PLAYER_COLORS[i];
+                    let k = 0.75 + 0.25 * (t * 6.0).sin();
+                    [c[0] * k + (1.0 - k), c[1] * k + (1.0 - k), c[2] * k + (1.0 - k), a]
+                }
+                None if rank == 0 => [1.0, 0.82, 0.2, a],
+                None => [0.9, 0.9, 0.95, a],
+            };
+            if let Some(i) = new {
+                let c = PLAYER_COLORS[i];
+                ui.rect(w * 0.12, top + rank as f32 * row_h + row_h * 0.08, w * 0.76, row_h * 0.84, [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25, 0.7 * a]);
+                ui.text(&format!("P{}", i + 1), w * 0.14, y, sc * 0.8, [c[0], c[1], c[2], a], Align::Left);
+            }
+            ui.text(&format!("{}.", rank + 1), x_rank, y, sc, col, Align::Left);
+            ui.text(&e.initials, x_name, y, sc, col, Align::Left);
+            ui.text(&format!("{}", e.score), x_score, y, sc, col, Align::Right);
+        }
+        if t > 2.0 && (t * 2.0) as i32 % 2 == 0 {
             let msg = if self.debug { "CLICK TO RIDE AGAIN!" } else { "PRESS A TO RIDE AGAIN!" };
             ui.text_fit(msg, w * 0.5, h * 0.9, 1.5, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
         }
@@ -2554,6 +2866,52 @@ mod tests {
         g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
         g.update(0.016, &[wii(0, false), wii(1, true)], screen, None);
         assert_eq!(g.joined_count(), 1);
+    }
+
+    #[test]
+    fn riders_who_make_the_table_shoot_their_initials() {
+        let track = Track::new();
+        let world = crate::world::generate(&track);
+        let mut g = Game::new(track, world, false, 0);
+        let screen = Vec2::new(1280.0, 720.0);
+        g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
+        g.players[0].score = 5000;
+        g.players[1].score = 3000;
+        g.state = State::Results;
+        g.state_t = 10.0;
+        g.update(0.016, &[wii(0, true), wii(1, false)], screen, None);
+        assert_eq!(g.state, State::Initials);
+        let aim = |id: u32, at: Vec2| SourceInput { aim: Some(at), ..wii(id, false) };
+        let key = |g: &Game, k: usize| {
+            let (x, y, w, h) = g.key_rects()[k];
+            Vec2::new(x + w * 0.5, y + h * 0.5)
+        };
+        let mut shoot = |g: &mut Game, k: usize| {
+            let at = key(g, k);
+            for _ in 0..20 {
+                g.update(0.016, &[aim(0, at), wii(1, false)], screen, None);
+            }
+            g.update(0.016, &[SourceInput { fire: true, fire_pressed: true, ..aim(0, at) }, wii(1, false)], screen, None);
+            g.update(0.016, &[aim(0, at), wii(1, false)], screen, None);
+        };
+        // Player 1 spells "AL" (a fourth letter would be ignored), then shoots END.
+        for _ in 0..40 {
+            g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
+        }
+        for k in [0, 11, 11, 11, 11, KEY_DEL, KEY_DEL, 11, KEY_END] {
+            shoot(&mut g, k);
+        }
+        assert_eq!(g.initials[0].as_ref().unwrap().letters, "AL");
+        assert!(g.initials[0].as_ref().unwrap().done_at.is_some());
+        assert_eq!(g.state, State::Initials, "still waiting for player 2");
+        // Player 2 never finishes: after the time limit they go in as "P2".
+        while g.state == State::Initials {
+            g.update(0.1, &[wii(0, false), wii(1, false)], screen, None);
+        }
+        assert_eq!(g.state, State::HighScores);
+        let names: Vec<_> = g.high.entries.iter().map(|e| (e.score, e.initials.as_str())).collect();
+        assert_eq!(names, vec![(5000, "AL"), (3000, "P2")]);
+        assert_eq!(g.high_new, vec![(0, 0), (1, 1)]);
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod atlas;
 mod audio;
 mod synth;
 mod game;
+mod highscores;
 mod hud;
 mod mesh;
 mod rng;
@@ -308,6 +309,15 @@ impl App {
     }
 }
 
+/// `$XDG_DATA_HOME/haunted-hollow/highscores.txt` (default `~/.local/share/...`).
+fn high_score_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))?;
+    Some(base.join("haunted-hollow").join("highscores.txt"))
+}
+
 fn save_ppm(path: &str, cap: &vk::Capture) {
     let mut data = format!("P6\n{} {}\n255\n", cap.width, cap.height).into_bytes();
     for px in cap.rgba.chunks_exact(4) {
@@ -435,6 +445,9 @@ fn main() {
     let world = world::generate(&track);
     eprintln!("world generated in {:.2}s (track {:.0} m)", t0.elapsed().as_secs_f32(), track.total);
     let mut game = Game::new(track, world, args.debug, args.bots);
+    if let Some(path) = high_score_path() {
+        game.set_high_score_file(path);
+    }
     let t1 = Instant::now();
     let static_mesh = game.static_mesh();
     eprintln!("world mesh: {} quads in {:.2}s", static_mesh.len() / 4, t1.elapsed().as_secs_f32());

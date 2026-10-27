@@ -79,6 +79,13 @@ back to the title and presses **A** again to play another round.
 
 Remotes rumble when you pop something.
 
+**High scores**: after the score screen, every rider whose score makes the top ten shoots the
+letters of their initials (up to three) on a big letter grid, then **END** (**DEL** removes a
+letter). Anyone who hasn't finished after 45 s keeps what they shot, or goes in as P1–P4. The
+table is then shown before the title, and the best score is shown on the title screen. It's
+saved in `~/.local/share/haunted-hollow/highscores.txt` (or under `$XDG_DATA_HOME`); delete
+that file to reset it. Computer players (`--bots`) never enter the table.
+
 **Pointer calibration** (if the crosshair moves the wrong way or doesn't reach the edges):
 `--wii-flip-x`, `--wii-flip-y`, `--wii-gain 1.6`, `--wii-y-offset -0.1` (for a bar below the TV).
 In `--debug` mode the overlay (F3) shows each remote's raw IR dots.
@@ -115,6 +122,7 @@ Other handy flags: `--bots N` (computer players, an attract/demo mode), `--boss`
 | `src/synth.rs` | Tiny synthesizer: instruments, drums, the songs and every sound effect |
 | `src/audio.rs` | Real-time mixer thread, crossfading music, ALSA output via dlopen |
 | `src/wiimote.rs` | evdev Wii Remote reader: buttons, IR pointer, rumble, LEDs, hot-plug |
+| `src/highscores.rs` | The top-ten table and its save file |
 | `src/main.rs` | Window, input, game loop, command-line flags |
 
 Tuning knobs: spawn pools and density in `Game::build_schedule`, points/hit sizes in `Kind`,
