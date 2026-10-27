@@ -42,8 +42,7 @@ jobs:
           cp target/release/haunted_hollow "dist/${name}/haunted-hollow"
           cp README.md LICENSE "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-          cp target/release/haunted_hollow dist/haunted-hollow.x86_64
-          cd dist && sha256sum "${name}.tar.gz" haunted-hollow.x86_64 > SHA256SUMS
+          cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS
 
       - name: Publish release
         env:
@@ -54,5 +53,4 @@ jobs:
             --title "Haunted Hollow ${tag}" \
             --generate-notes \
             "dist/haunted-hollow-${tag}-linux-x86_64.tar.gz" \
-            dist/haunted-hollow.x86_64 \
             dist/SHA256SUMS
