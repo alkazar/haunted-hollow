@@ -1229,8 +1229,8 @@ fn boss_doors(w: &mut World) {
             w.set(x, -13, z + 2, b::BANNER);
         }
     }
-    // Royal red carpet from the lair up to the doors and down the hall.
-    for z in 186..299 {
+    // Royal red carpet from the lair entrance up to the doors and down the hall.
+    for z in 178..299 {
         for x in -3..=2 {
             let id = if x == -3 || x == 2 { b::GOLD } else { b::CARPET };
             w.set(x, -18, z, id);
