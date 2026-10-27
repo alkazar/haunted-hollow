@@ -93,6 +93,8 @@ const AWARDS: [&str; 10] = [
     "SPOOKY STAR",
 ];
 
+/// Bats in each batch of the swarm on the big drop.
+const SWARM_BATCH: usize = 3;
 /// Index of boss hits in `Player::counts` (after one slot per enemy kind).
 const BOSS_COUNT: usize = 8;
 /// Seconds a haunted portrait spends peeling off its wall before it flies.
@@ -211,6 +213,8 @@ struct Spawn {
     kind: Kind,
     seed: u64,
     side: f32,
+    /// Part of the bat swarm on the big drop (placed by `spawn_swarm_bat`).
+    swarm: bool,
 }
 
 /// What the renderer needs for one frame.
@@ -473,15 +477,24 @@ impl Game {
                     kind = Self::ghost_substitute(zones[si.min(zones.len() - 1)], &mut rng);
                 }
                 let side = rng.sign();
-                spawns.push(Spawn { t, kind, seed: rng.next_u32() as u64, side });
+                spawns.push(Spawn { t, kind, seed: rng.next_u32() as u64, side, swarm: false });
                 if rng.chance(0.22 + 0.08 * (n - 1.0)) {
-                    spawns.push(Spawn { t: t + 0.15, kind, seed: rng.next_u32() as u64, side: -side });
+                    spawns.push(Spawn { t: t + 0.15, kind, seed: rng.next_u32() as u64, side: -side, swarm: false });
                 }
                 t += interval / density * rng.range(0.7, 1.3);
             }
             // One golden candy bonus per section.
             if t1 - t0 > 4.0 {
-                spawns.push(Spawn { t: rng.range(t0 + 1.0, t1 - 1.0), kind: Candy, seed: rng.next_u32() as u64, side: rng.sign() });
+                spawns.push(Spawn { t: rng.range(t0 + 1.0, t1 - 1.0), kind: Candy, seed: rng.next_u32() as u64, side: rng.sign(), swarm: false });
+            }
+        }
+        // Bats burst up the shaft at the riders in three batches: out of the hole as the
+        // cart nears it, at the lip, and on the way down (always the same number, however
+        // many are riding).
+        for start in [t_drop - 0.5, t_drop + 0.4, t_drop + 1.3] {
+            for k in 0..SWARM_BATCH {
+                let t = start + 0.5 * k as f32 / SWARM_BATCH as f32 + rng.range(0.0, 0.05);
+                spawns.push(Spawn { t, kind: Bat, seed: rng.next_u32() as u64, side: 1.0, swarm: true });
             }
         }
         spawns.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
@@ -909,6 +922,52 @@ impl Game {
         None
     }
 
+    /// One bat of the drop swarm: it starts further down the shaft and flies up past
+    /// the cart, ending just above and behind where the riders will be. Unlike normal
+    /// targets, swarm bats may crowd together; they only have to stay clear of the walls.
+    fn spawn_swarm_bat(&mut self, seed: u64) {
+        let mut rng = Rng::new(seed);
+        let d_now = self.track.dist_at_time(self.ride_t);
+        for _ in 0..12 {
+            let life = rng.range(1.1, 1.6);
+            let fa = self.track.frame_at(d_now + rng.range(9.0, 15.0));
+            let d_end = self.track.dist_at_time((self.ride_t + life).min(RIDE_SECONDS));
+            let fb = self.track.frame_at(d_end - rng.range(1.5, 3.5));
+            // (World up, not the track's: on the steep drop that leans far forward.)
+            let a = fa.pos + fa.right * rng.range(-1.2, 1.2) + Vec3::Y * rng.range(1.2, 3.0);
+            let b = fb.pos + fb.right * rng.range(-1.4, 1.4) + Vec3::Y * rng.range(2.6, 3.4);
+            let t = Target {
+                kind: Kind::Bat,
+                home: a,
+                a,
+                b,
+                age: 0.0,
+                life,
+                leave: 0.0,
+                phase: rng.range(0.0, 6.28),
+                variant: rng.int(0, 2) as usize,
+                pos: a,
+                scale: 0.0,
+                dead: false,
+            };
+            // A bat's full extents don't fit the steep shaft, so check a tighter core.
+            let clear = |p: Vec3| {
+                [-0.45, 0.0, 0.45].iter().all(|&dx| {
+                    [-0.4, 0.0, 0.4].iter().all(|&dy| [-0.45, 0.0, 0.45].iter().all(|&dz| !self.world.occupied(p + Vec3::new(dx, dy, dz))))
+                })
+            };
+            if (0..=10).all(|i| clear(Self::motion(&t, life * i as f32 / 10.0))) {
+                let pan = self.pan_of(a);
+                self.sfx(Sfx::Squeak, 0.22, pan, rng.range(0.85, 1.35));
+                self.spawn_kinds[Kind::Bat.index()] += 1;
+                self.spawn_stats.0 += 1;
+                self.targets.push(t);
+                return;
+            }
+        }
+        self.spawn_stats.1 += 1;
+    }
+
     fn spawn_sound(&mut self, kind: Kind, at: Vec3) {
         let (sfx, vol) = match kind {
             Kind::Ghost => (Sfx::Ghost, 0.35),
@@ -1025,8 +1084,10 @@ impl Game {
                 }
                 while self.next_spawn < self.spawns.len() && self.spawns[self.next_spawn].t <= self.ride_t {
                     let s = &self.spawns[self.next_spawn];
-                    let (k, seed, side) = (s.kind, s.seed, s.side);
-                    if !self.spawn_target(k, seed, side, None) {
+                    let (k, seed, side, swarm) = (s.kind, s.seed, s.side, s.swarm);
+                    if swarm {
+                        self.spawn_swarm_bat(seed);
+                    } else if !self.spawn_target(k, seed, side, None) {
                         self.retries.push((self.ride_t + 0.35, k, seed.wrapping_add(1), 3));
                     }
                     self.next_spawn += 1;
@@ -2493,6 +2554,35 @@ mod tests {
         g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
         g.update(0.016, &[wii(0, false), wii(1, true)], screen, None);
         assert_eq!(g.joined_count(), 1);
+    }
+
+    #[test]
+    fn a_swarm_of_bats_flies_up_the_big_drop() {
+        let track = Track::new();
+        let world = crate::world::generate(&track);
+        let mut g = Game::new(track, world, false, 1);
+        let screen = Vec2::new(1280.0, 720.0);
+        let (t_drop, t_crypt) = (g.track.time_at_z(127.5), g.track.time_at_z(140.0));
+        let mut before = None;
+        let mut most = 0;
+        for _ in 0..150 * 60 {
+            g.update(1.0 / 60.0, &[], screen, None);
+            if g.state != State::Ride {
+                continue;
+            }
+            if before.is_none() && g.ride_t >= t_drop - 1.5 {
+                before = Some(g.spawn_kinds[Kind::Bat.index()]);
+            }
+            if g.ride_t >= t_drop - 1.5 {
+                most = most.max(g.targets.iter().filter(|t| t.kind == Kind::Bat).count());
+            }
+            if g.ride_t > t_crypt {
+                break;
+            }
+        }
+        let swarm = g.spawn_kinds[Kind::Bat.index()] - before.unwrap();
+        assert!(swarm >= 7, "only {swarm} of the 9 swarm bats flew up the drop");
+        assert!(most >= 3, "at most {most} bats on screen at once");
     }
 
     #[test]
