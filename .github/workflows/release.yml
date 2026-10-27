@@ -1,0 +1,58 @@
+# Builds the game and publishes it as a GitHub release whenever a version tag is pushed:
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# The binary only links against libc (Vulkan, X11/Wayland and ALSA are loaded at runtime),
+# so no extra packages are needed. It's built on the oldest supported Ubuntu so it also runs
+# on distros with an older glibc.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        # The tag becomes the version the game reports (--version and the title screen).
+        env:
+          HAUNTED_VERSION: ${{ github.ref_name }}
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          name="haunted-hollow-${tag}-linux-x86_64"
+          mkdir -p "dist/${name}"
+          strip target/release/haunted_hollow
+          cp target/release/haunted_hollow "dist/${name}/haunted-hollow"
+          cp README.md LICENSE "dist/${name}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          cp target/release/haunted_hollow dist/haunted-hollow.x86_64
+          cd dist && sha256sum "${name}.tar.gz" haunted-hollow.x86_64 > SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "${tag}" \
+            --title "Haunted Hollow ${tag}" \
+            --generate-notes \
+            "dist/haunted-hollow-${tag}-linux-x86_64.tar.gz" \
+            dist/haunted-hollow.x86_64 \
+            dist/SHA256SUMS

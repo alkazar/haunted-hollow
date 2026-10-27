@@ -49,6 +49,19 @@ award on the results screen ("GHOST CATCHER", "BAT BOPPER", "BOSS BUSTER"...).
   the way), it can't overlap another target, and it must stay clear of the score panels and the
   boss bar. New targets are steered to different parts of the screen so they don't bunch up.
 
+## Download
+
+Prebuilt Linux (x86_64) builds are on the [Releases](https://github.com/alkazar/haunted-hollow/releases)
+page. Grab `haunted-hollow-<version>-linux-x86_64.tar.gz`, unpack it and run `./haunted-hollow`, or
+download the bare `haunted-hollow.x86_64` and make it executable first
+(`chmod +x haunted-hollow.x86_64`). You need a Vulkan driver (Mesa or NVIDIA).
+
+To publish a new release, push a version tag: `git tag v1.0.0 && git push origin v1.0.0`.
+The [release workflow](.github/workflows/release.yml) tests, builds and uploads it. The tag is
+the version: the game shows it on the title screen and with `--version`. Local builds use
+`git describe --tags` instead (e.g. `v1.0.0-3-gabc1234`, three commits after `v1.0.0`), so the
+version in `Cargo.toml` doesn't need updating.
+
 ## Build & run
 
 Requirements: Linux, a Rust toolchain (1.77+), a Vulkan driver (Mesa or NVIDIA).

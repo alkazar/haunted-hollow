@@ -14,6 +14,7 @@ USAGE: haunted_hollow [OPTIONS]
   --mute               No music or sound effects
   --dump-audio DIR     Write all music and sound effects as WAV files and exit
                        (sound uses ALSA; set HAUNTED_ALSA_DEVICE to pick a device)
+  --version, -V        Print the version and exit
 
 Wii Remote calibration (sensor bar):
   --wii-flip-x         Invert horizontal pointing

@@ -86,6 +86,10 @@ fn parse_args() -> Args {
             "--wii-flip-y" => a.ir.flip_y = !a.ir.flip_y,
             "--wii-gain" => a.ir.gain = val(&mut i).parse().unwrap_or(1.35),
             "--wii-y-offset" => a.ir.y_offset = val(&mut i).parse().unwrap_or(0.0),
+            "--version" | "-V" => {
+                println!("haunted-hollow {}", env!("HAUNTED_VERSION"));
+                std::process::exit(0);
+            }
             "--help" | "-h" => {
                 println!("{}", include_str!("../HELP.txt"));
                 std::process::exit(0);

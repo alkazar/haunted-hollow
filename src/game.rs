@@ -2389,6 +2389,9 @@ impl Game {
             format!("{key}  ({:.0})", left.max(0.0).ceil())
         };
         ui.text_fit(&msg, w * 0.5, h * 0.84, 1.3, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
+        // Which build this is, tucked into the corner.
+        let version = env!("HAUNTED_VERSION");
+        ui.text(version, w - 3.0 * unit, h - 9.0 * unit, 0.7, [0.6, 0.6, 0.7, 0.6], Align::Right);
     }
 
     fn draw_tutorial(&self, ui: &mut Ui) {
