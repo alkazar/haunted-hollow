@@ -196,13 +196,13 @@ impl World {
         }
     }
 
-    /// Positions (block bottom centres) of every fire block, for the animated flames.
-    pub fn fire_cells(&self) -> Vec<Vec3> {
+    /// Positions (block bottom centres) of every block of kind `id`, for things animated per frame.
+    pub fn cells_of(&self, id: u8) -> Vec<Vec3> {
         let mut out = vec![];
         for z in Z0..Z1 {
             for y in Y0..Y1 {
                 for x in X0..X1 {
-                    if self.get(x, y, z) == b::FIRE {
+                    if self.get(x, y, z) == id {
                         out.push(Vec3::new(x as f32 + 0.5, y as f32, z as f32 + 0.5));
                     }
                 }
@@ -548,14 +548,9 @@ impl World {
             }
             Shape::Cauldron => {
                 push_box(out, &m(c + Vec3::Y * 0.36, Vec3::new(0.9, 0.72, 0.9)), T_IRON, [0.3, 0.3, 0.34], light, 0.0);
-                push_box(out, &m(c + Vec3::Y * 0.72, Vec3::new(0.76, 0.04, 0.76)), T_SLIME, [1.0; 3], light, 1.0);
-                for k in 0..3 {
-                    let a = k as f32 * 2.1 + x as f32;
-                    let pos = c + Vec3::new(a.cos() * 0.2, 0.8 + k as f32 * 0.12, a.sin() * 0.2);
-                    push_box(out, &m(pos, Vec3::splat(0.08 + k as f32 * 0.02)), T_SLIME, [1.0; 3], light, 1.0);
-                }
+                // The brew's surface and bubbles are animated by the game (see `cauldrons`).
             }
-            // Fire is animated by the game each frame (see `fire_cells`), not baked in.
+            // Fire is animated by the game each frame (see `cells_of`), not baked in.
             Shape::Cross if id == b::FIRE => {}
             Shape::Cross => {
                 let uv = tile_uv(p.tiles[1]);

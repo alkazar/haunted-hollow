@@ -218,6 +218,8 @@ pub struct Game {
     lane: usize,
     /// Fireplace and brazier flames, animated every frame.
     fires: Vec<Vec3>,
+    /// Witch's cauldrons, whose brew bubbles every frame.
+    cauldrons: Vec<Vec3>,
     /// How far the boss doors are open (0 shut .. 1 wide open).
     door_open: f32,
     retries: Vec<(f32, Kind, u64, u32)>,
@@ -336,11 +338,13 @@ impl Game {
             lane: 0,
             door_open: 0.0,
             fires: vec![],
+            cauldrons: vec![],
             retries: vec![],
             cam_dir: Vec3::Z,
             cam_up: Vec3::Y,
         };
-        g.fires = g.world.fire_cells();
+        g.fires = g.world.cells_of(crate::world::b::FIRE);
+        g.cauldrons = g.world.cells_of(crate::world::b::CAULDRON);
         for k in 0..bots.min(4) {
             g.players[k as usize].joined = true;
             g.players[k as usize].source = Some(SourceId::Bot(k));
@@ -1558,6 +1562,44 @@ impl Game {
                 let s = 0.07 * (1.0 - u);
                 let e = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s));
                 push_box(out, &e, T_WHITE, [1.0, 0.6 - 0.3 * u, 0.15], Vec3::ONE, 1.0);
+            }
+        }
+
+        // Boiling brew: the surface heaves, bubbles swell and pop, and green steam curls up.
+        for (i, &c) in self.cauldrons.iter().enumerate() {
+            if c.distance(self.cam) > 70.0 {
+                continue;
+            }
+            let seed = i as f32 * 2.9;
+            let level = 0.735 + 0.012 * (t * 2.3 + seed).sin();
+            let surf = Mat4::from_translation(c + Vec3::Y * level) * Mat4::from_scale(Vec3::new(0.76, 0.04, 0.76));
+            push_box(out, &surf, T_SLIME, [1.0; 3], Vec3::ONE, 1.0);
+            // Each bubble grows in place for a while, then pops and reappears somewhere else.
+            for k in 0..6 {
+                let ph = seed + k as f32 * 1.37;
+                let rate = 0.8 + 0.5 * (ph * 3.7).sin().abs();
+                let cyc = t * rate + ph;
+                let (n, u) = (cyc.floor(), cyc.fract());
+                let a = (n * 2.39 + ph * 5.1).sin() * 3.14;
+                let r = 0.08 + 0.22 * (n * 1.71 + ph).sin().abs();
+                let s = 0.05 + 0.13 * u * u;
+                let p = c + Vec3::new(a.cos() * r, level + s * 0.3, a.sin() * r);
+                let b = Mat4::from_translation(p) * Mat4::from_scale(Vec3::new(s, s * 0.8, s));
+                push_box(out, &b, T_SLIME, [0.75 + 0.25 * u; 3], Vec3::ONE, 1.0);
+            }
+            // Wisps of steam drifting up and fading out.
+            for k in 0..4 {
+                let ph = seed * 1.3 + k as f32 * 2.2;
+                let u = (t * 0.45 + ph * 0.29).fract();
+                let p = c + Vec3::new(
+                    (ph * 4.0).sin() * 0.2 + (t * 1.5 + ph).sin() * 0.1 * u,
+                    0.8 + u * 1.3,
+                    (ph * 2.0).cos() * 0.2,
+                );
+                let s = 0.08 + 0.14 * u;
+                let g = 0.75 * (1.0 - u);
+                let w = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s));
+                push_box(out, &w, T_WHITE, [0.25 * g, g, 0.4 * g], Vec3::ONE, 1.0);
             }
         }
 
