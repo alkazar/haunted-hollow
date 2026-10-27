@@ -173,6 +173,8 @@ impl Player {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum State {
     Title,
+    /// "Pull B to shoot" lesson: every player pops a practice target before the countdown.
+    Tutorial,
     Ride,
     Boss,
     Victory,
@@ -251,6 +253,8 @@ pub struct Game {
     pub debug: bool,
     pub show_debug: bool,
     title_join_t: Option<f32>,
+    /// When (in `state_t`) each player popped their practice target.
+    practice: [Option<f32>; 4],
     pub rumble_requests: Vec<(SourceId, u32)>,
     pub led_requests: Vec<(SourceId, usize)>,
     pub bots: u32,
@@ -324,6 +328,7 @@ impl Game {
             debug,
             show_debug: debug,
             title_join_t: None,
+            practice: [None; 4],
             rumble_requests: vec![],
             led_requests: vec![],
             bots,
@@ -356,6 +361,24 @@ impl Game {
         self.players.iter().filter(|p| p.joined).count()
     }
 
+    fn start_tutorial(&mut self) {
+        self.state = State::Tutorial;
+        self.state_t = 0.0;
+        self.ride_t = 0.0;
+        self.practice = [None; 4];
+        self.targets.clear();
+        self.particles.clear();
+    }
+
+    /// Screen position of a player's practice target (one per score-card column).
+    fn practice_pos(&self, i: usize) -> Vec2 {
+        Vec2::new((i as f32 + 0.5) * self.screen.x / 4.0, self.screen.y * 0.7)
+    }
+
+    fn practice_radius(&self) -> f32 {
+        (self.screen.y / 240.0).max(1.0) * 18.0
+    }
+
     pub fn start_ride(&mut self) {
         self.state = State::Ride;
         self.state_t = 0.0;
@@ -376,7 +399,7 @@ impl Game {
 
     /// Debug helper: jump straight to the boss.
     pub fn skip_to_boss(&mut self) {
-        if self.state == State::Title {
+        if matches!(self.state, State::Title | State::Tutorial) {
             self.start_ride();
         }
         if self.state == State::Ride {
@@ -841,7 +864,7 @@ impl Game {
     /// Which music should be playing right now.
     pub fn music(&self) -> Option<Music> {
         Some(match self.state {
-            State::Title => Music::Title,
+            State::Title | State::Tutorial => Music::Title,
             State::Ride => Music::Ride,
             State::Boss => Music::Boss,
             State::Victory | State::Outro => Music::Victory,
@@ -897,6 +920,15 @@ impl Game {
                 let auto = self.title_join_t.map_or(false, |t| t > 15.0) || (self.bots > 0 && self.state_t > 1.5);
                 if (start && self.joined_count() > 0) || auto {
                     self.title_join_t = None;
+                    self.start_tutorial();
+                }
+            }
+            State::Tutorial => {
+                // Off we go a moment after the last practice target pops (+ skips the lesson).
+                let hits: Vec<_> = (0..4).filter(|&i| self.players[i].joined).map(|i| self.practice[i]).collect();
+                let last = hits.iter().copied().try_fold(0.0f32, |m, h| h.map(|h| m.max(h)));
+                let skip = inputs.iter().any(|i| i.start) && self.state_t > 0.5;
+                if hits.is_empty() || skip || last.map_or(false, |l| self.state_t - l > 0.8) {
                     self.start_ride();
                 }
             }
@@ -1140,6 +1172,9 @@ impl Game {
             .map(|(p, _)| p)
             .collect();
         let boss_pt = self.boss.as_ref().filter(|b| !b.defeated && b.t > 2.0).and_then(|b| self.project(b.pos));
+        let practice: Vec<Option<Vec2>> = (0..4)
+            .map(|i| (self.state == State::Tutorial && self.practice[i].is_none() && self.state_t > 1.5).then(|| self.practice_pos(i)))
+            .collect();
         let mut rng = self.rng.clone();
         for (i, p) in self.players.iter_mut().enumerate() {
             let Some(SourceId::Bot(_)) = p.source else { continue };
@@ -1148,6 +1183,7 @@ impl Game {
             if p.bot_think <= 0.0 {
                 p.bot_think = rng.range(0.25, 0.6);
                 let mut cands = targets.clone();
+                cands.extend(practice[i]);
                 if let Some((b, _)) = boss_pt {
                     cands.push(b);
                 }
@@ -1165,7 +1201,7 @@ impl Game {
 
     fn update_camera(&mut self, dt: f32) {
         let (d, speed) = match self.state {
-            State::Title => (0.0, 0.0),
+            State::Title | State::Tutorial => (0.0, 0.0),
             State::Ride => {
                 let d = self.track.dist_at_time(self.ride_t);
                 (d, (self.track.dist_at_time(self.ride_t + 0.1) - d) * 10.0)
@@ -1264,7 +1300,7 @@ impl Game {
     }
 
     fn handle_shooting(&mut self, inputs: &[SourceInput], dt: f32) {
-        let can_shoot = matches!(self.state, State::Ride | State::Boss);
+        let can_shoot = matches!(self.state, State::Tutorial | State::Ride | State::Boss);
         for i in 0..4 {
             let src = self.players[i].source;
             let (fire_pressed, fire_held) = match src {
@@ -1305,6 +1341,22 @@ impl Game {
 
     fn shoot(&mut self, pi: usize, aim: Vec2) {
         let color = PLAYER_COLORS[pi];
+        if self.state == State::Tutorial {
+            // Each player can only pop their own practice target.
+            if self.practice[pi].is_none() && aim.distance(self.practice_pos(pi)) <= self.practice_radius() {
+                self.practice[pi] = Some(self.state_t);
+                if let Some(dir) = self.ray_dir(aim) {
+                    self.burst(self.cam + dir * 4.0, 30, color, true);
+                }
+                let pan = (aim.x / self.screen.x * 2.0 - 1.0) * 0.8;
+                self.sfx(Sfx::Pop, 0.7, pan, 0.9 + pi as f32 * 0.12);
+                self.sfx(Sfx::Poof, 0.5, pan, 1.0);
+                if let Some(src) = self.players[pi].source {
+                    self.rumble_requests.push((src, 80));
+                }
+                return;
+            }
+        }
         // Find the nearest target under the crosshair.
         let mut best: Option<(usize, f32)> = None;
         for (ti, t) in self.targets.iter().enumerate() {
@@ -1782,6 +1834,7 @@ impl Game {
 
         match self.state {
             State::Title => self.draw_title(ui),
+            State::Tutorial => self.draw_tutorial(ui),
             State::Results => self.draw_results(ui),
             _ => {}
         }
@@ -1936,7 +1989,145 @@ impl Game {
             format!("{key}  ({:.0})", left.max(0.0).ceil())
         };
         ui.text_fit(&msg, w * 0.5, h * 0.84, 1.3, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
-        ui.text_fit("POINT AT THE SCREEN AND PRESS B TO POP THE SPOOKS!", w * 0.5, h * 0.91, 0.8, w * 0.9, [0.8, 0.8, 0.9, 0.9], Align::Center);
+    }
+
+    fn draw_tutorial(&self, ui: &mut Ui) {
+        let (w, h, unit) = (ui.w, ui.h, ui.unit);
+        let t = self.state_t;
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let orange = [1.0, 0.6, 0.1, 1.0];
+        // Layout first, so the backing panel can be sized to fit everything on it.
+        let u = (unit * 1.5).min(w / 170.0); // the remote's own pixel size
+        let (rw, rh) = (100.0 * u, 16.0 * u);
+        let rx = w * 0.5 - rw * 0.6;
+        let top = h * 0.05;
+        let ry = top + 32.0 * unit;
+        let hint_y = ry + rh + 20.0 * u;
+        let panel_h = hint_y + 26.0 * unit - top;
+        ui.rect(0.0, top, w, panel_h, [0.02, 0.0, 0.04, 0.85]);
+        ui.rect(0.0, top, w, unit, [1.0, 0.6, 0.1, 0.6]);
+        ui.rect(0.0, top + panel_h - unit, w, unit, [1.0, 0.6, 0.1, 0.6]);
+        let head = if self.debug { "CLICK TO SHOOT!" } else { "PULL THE B TRIGGER TO SHOOT!" };
+        ui.text_fit(head, w * 0.5, top + 7.0 * unit, 2.2, w * 0.9, orange, Align::Center);
+
+        // A Wii Remote side on, pointing right at the screen, squeezing B once a second.
+        let since = t.fract();
+        let squeeze = since < 0.18;
+        let outline = [0.22, 0.22, 0.27, 1.0];
+        let shade = |k: f32| [0.97 * k, 0.97 * k, 0.99 * k, 1.0];
+        // Wrist strap hanging from the back end (behind the body).
+        for k in 0..16 {
+            let a = k as f32 / 15.0 * std::f32::consts::PI;
+            let (px, py) = (rx - 3.0 * u - a.sin() * 5.0 * u, ry + rh * 0.6 + (1.0 - a.cos()) * 6.0 * u);
+            ui.rect(px, py, 1.4 * u, 1.4 * u, [0.55, 0.6, 0.7, 1.0]);
+        }
+        ui.round_rect(rx - 4.0 * u, ry + rh * 0.45, 4.0 * u, 3.0 * u, u, [0.35, 0.37, 0.45, 1.0]);
+        // Top buttons stand proud of the body, so draw them first: 1 and 2 at the back,
+        // then - HOME +, the big A, and the D-pad near the front.
+        for k in 0..2 {
+            let bx = rx + (16.0 + k as f32 * 8.0) * u;
+            ui.round_rect(bx - u * 0.5, ry - 2.5 * u, 5.0 * u, 3.5 * u, u, outline);
+            ui.rect(bx, ry - 2.0 * u, 4.0 * u, 2.0 * u, shade(0.82));
+        }
+        for k in 0..3 {
+            let bx = rx + (44.0 + k as f32 * 6.0) * u;
+            let c = if k == 1 { [0.35, 0.6, 1.0, 1.0] } else { shade(0.8) };
+            ui.round_rect(bx - u * 0.5, ry - 1.8 * u, 4.0 * u, 2.8 * u, u, outline);
+            ui.rect(bx, ry - 1.3 * u, 3.0 * u, 1.3 * u, c);
+        }
+        let ax = rx + 66.0 * u;
+        ui.round_rect(ax - 0.5 * u, ry - 3.5 * u, 9.0 * u, 4.5 * u, 2.0 * u, outline);
+        ui.round_rect(ax + 0.5 * u, ry - 2.7 * u, 7.0 * u, 3.0 * u, 1.5 * u, shade(0.86));
+        ui.rect(ax + 1.5 * u, ry - 2.3 * u, 3.0 * u, 0.8 * u, shade(1.0));
+        ui.text("A", ax + 4.0 * u, ry - 3.5 * u - 10.0 * unit, 1.0, [0.8, 0.8, 0.85, 1.0], Align::Center);
+        let dx = rx + 80.0 * u;
+        ui.round_rect(dx - 0.5 * u, ry - 3.0 * u, 10.0 * u, 4.0 * u, u, outline);
+        ui.rect(dx + 0.5 * u, ry - 2.2 * u, 8.0 * u, 2.4 * u, [0.32, 0.32, 0.38, 1.0]);
+        ui.rect(dx + 3.0 * u, ry - 3.6 * u, 4.0 * u, 1.5 * u, outline);
+        ui.rect(dx + 3.5 * u, ry - 3.0 * u, 3.0 * u, 1.0 * u, [0.4, 0.4, 0.46, 1.0]);
+        // Body: rounded, lit from above, with a black IR cap on the front.
+        ui.round_rect(rx - u, ry - u, rw + 2.0 * u, rh + 2.0 * u, 4.5 * u, outline);
+        ui.round_rect(rx, ry, rw, rh, 3.5 * u, shade(0.9));
+        ui.rect(rx + 3.0 * u, ry + 1.0 * u, rw - 12.0 * u, 3.0 * u, shade(1.0));
+        ui.rect(rx + 2.0 * u, ry + rh - 6.0 * u, rw - 9.0 * u, 3.0 * u, shade(0.8));
+        ui.rect(rx + 3.5 * u, ry + rh - 3.0 * u, rw - 11.0 * u, 2.0 * u, shade(0.68));
+        ui.round_rect(rx + rw - 8.0 * u, ry, 8.0 * u, rh, 3.5 * u, [0.07, 0.05, 0.1, 1.0]);
+        ui.rect(rx + rw - 8.0 * u, ry, 3.0 * u, rh, [0.07, 0.05, 0.1, 1.0]);
+        ui.rect(rx + rw - 5.5 * u, ry + 2.5 * u, 1.5 * u, rh * 0.35, [0.35, 0.28, 0.5, 1.0]);
+        // Expansion port at the back and the four player lights, the first one lit.
+        ui.rect(rx, ry + 5.0 * u, 1.5 * u, rh - 10.0 * u, [0.3, 0.3, 0.35, 1.0]);
+        for k in 0..4 {
+            let lit = k == 0 && (t * 2.0).fract() < 0.7;
+            let c = if lit { [0.4, 0.8, 1.0, 1.0] } else { [0.62, 0.66, 0.75, 1.0] };
+            ui.rect(rx + (5.0 + k as f32 * 3.5) * u, ry + 6.5 * u, 2.0 * u, 1.2 * u, c);
+        }
+
+        // The B trigger sits in a recess underneath, below the D-pad, and glows.
+        let glow = 0.75 + 0.25 * (t * 8.0).sin();
+        let drop = if squeeze { 1.5 } else { 5.0 } * u;
+        let bx = rx + 78.0 * u;
+        let by = ry + rh;
+        ui.rect(bx - 7.0 * u, by - 0.5 * u, 14.0 * u, 1.5 * u, [0.3, 0.3, 0.36, 1.0]);
+        ui.round_rect(bx - 5.0 * u, by - 0.5 * u, 10.0 * u, drop + 1.5 * u, 1.5 * u, outline);
+        ui.round_rect(bx - 4.0 * u, by, 8.0 * u, drop, 1.2 * u, [1.0, 0.55 * glow, 0.1, 1.0]);
+        ui.rect(bx - 3.0 * u, by + 0.5 * u, 2.0 * u, (drop - 1.5 * u).max(0.5 * u), [1.0, 0.85, 0.5, 1.0]);
+        // "B" badge pointing at the trigger.
+        let (lx, ly) = (bx + 8.0 * u, by + 2.0 * u);
+        ui.rect(bx + 4.5 * u, ly + 3.0 * u, 3.5 * u, u, orange);
+        ui.round_rect(lx - 0.5 * u, ly - 0.5 * u, 9.0 * u, 9.0 * u, 2.5 * u, [0.0, 0.0, 0.0, 1.0]);
+        ui.round_rect(lx, ly, 8.0 * u, 8.0 * u, 2.0 * u, [1.0, 0.6 * glow + 0.1, 0.1, 1.0]);
+        let bs = 8.0 * u / (8.0 * unit) * 0.8;
+        ui.text("B", lx + 4.0 * u, ly + 4.0 * u - 4.0 * bs * unit, bs, white, Align::Center);
+        // The shot: a dotted beam out of the front and a little pop on every squeeze.
+        let bx0 = rx + rw + 4.0 * u;
+        let beam_y = ry + rh * 0.5;
+        for k in 0..5 {
+            let x = bx0 + k as f32 * 6.0 * u;
+            let a = if since < 0.4 { 1.0 - since / 0.4 } else { 0.25 };
+            ui.rect(x, beam_y - u, 3.0 * u, 2.0 * u, [1.0, 0.9, 0.5, a]);
+        }
+        let star = if since < 0.3 { 1.0 + since * 3.0 } else { 0.0 };
+        if star > 0.0 {
+            ui.sprite(T_STAR, bx0 + 36.0 * u, beam_y, 12.0 * u * star, [1.0, 0.85, 0.3, 1.0 - since / 0.3]);
+        }
+        let hint = if self.debug { "AIM WITH THE MOUSE - HOLD TO RAPID FIRE" } else { "POINT AT THE SCREEN - HOLD B TO RAPID FIRE" };
+        ui.text_fit(hint, w * 0.5, hint_y, 1.0, w * 0.9, [0.9, 0.9, 1.0, 1.0], Align::Center);
+        ui.text_fit("EVERYONE SHOOT YOUR TARGET TO START THE RIDE!", w * 0.5, hint_y + 11.0 * unit, 1.2, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
+
+        // One practice target per player, in their colour.
+        let r = self.practice_radius();
+        for (i, p) in self.players.iter().enumerate() {
+            if !p.joined {
+                continue;
+            }
+            let c = PLAYER_COLORS[i];
+            let pos = self.practice_pos(i);
+            match self.practice[i] {
+                None => {
+                    let bob = (t * 3.0 + i as f32).sin() * 2.0 * unit;
+                    let pulse = 1.0 + 0.06 * (t * 5.0 + i as f32).sin();
+                    let (x, y) = (pos.x, pos.y + bob);
+                    for (k, (s, col)) in [(2.0, [c[0], c[1], c[2], 1.0]), (1.4, white), (0.8, [c[0], c[1], c[2], 1.0])].iter().enumerate() {
+                        let sz = r * s * pulse;
+                        if k == 0 {
+                            ui.sprite(T_RING, x, y, sz + 2.0 * unit, [0.0, 0.0, 0.0, 0.7]);
+                        }
+                        ui.sprite(T_RING, x, y, sz, *col);
+                    }
+                    ui.rect(x - 2.0 * unit, y - 2.0 * unit, 4.0 * unit, 4.0 * unit, white);
+                    ui.text_fit(&format!("P{}", i + 1), x, y + r + 4.0 * unit, 1.0, w * 0.22, [c[0], c[1], c[2], 1.0], Align::Center);
+                }
+                Some(at) => {
+                    let k = smooth((t - at) / 0.25);
+                    let sc = 1.6 + (1.0 - k) * 0.8;
+                    ui.text_fit("READY!", pos.x, pos.y - 4.0 * sc * unit, sc, w * 0.22, [c[0], c[1], c[2], k], Align::Center);
+                }
+            }
+        }
+        if t > 4.0 {
+            let key = if self.debug { "PRESS + OR ENTER TO SKIP" } else { "PRESS + TO SKIP" };
+            ui.text_fit(key, w * 0.5, h * 0.9, 0.8, w * 0.9, [0.7, 0.7, 0.8, 0.8], Align::Center);
+        }
     }
 
     fn draw_results(&self, ui: &mut Ui) {
@@ -2044,5 +2235,45 @@ mod tests {
         g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
         g.update(0.016, &[wii(0, false), wii(1, true)], screen, None);
         assert_eq!(g.joined_count(), 1);
+    }
+
+    #[test]
+    fn every_player_must_pop_their_practice_target_before_the_ride() {
+        let track = Track::new();
+        let world = crate::world::generate(&track);
+        let mut g = Game::new(track, world, false, 0);
+        let screen = Vec2::new(1280.0, 720.0);
+        g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
+        let mut start = wii(0, false);
+        start.start = true;
+        g.update(0.016, &[start, wii(1, false)], screen, None);
+        assert_eq!(g.state, State::Tutorial);
+        let aim = |id: u32, at: Vec2| SourceInput { aim: Some(at), ..wii(id, false) };
+        let shot = |id: u32, at: Vec2| SourceInput { fire: true, fire_pressed: true, ..aim(id, at) };
+        let (p0, p1) = (g.practice_pos(0), g.practice_pos(1));
+        // Player 1 can't pop player 2's target, only their own.
+        for _ in 0..30 {
+            g.update(0.016, &[aim(0, p1), wii(1, false)], screen, None);
+        }
+        g.update(0.016, &[shot(0, p1), wii(1, false)], screen, None);
+        g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
+        assert!(g.practice[1].is_none());
+        for _ in 0..30 {
+            g.update(0.016, &[aim(0, p0), wii(1, false)], screen, None);
+        }
+        g.update(0.016, &[shot(0, p0), wii(1, false)], screen, None);
+        assert!(g.practice[0].is_some());
+        for _ in 0..120 {
+            g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
+        }
+        assert_eq!(g.state, State::Tutorial, "waits for player 2");
+        for _ in 0..30 {
+            g.update(0.016, &[wii(0, false), aim(1, p1)], screen, None);
+        }
+        g.update(0.016, &[wii(0, false), shot(1, p1)], screen, None);
+        for _ in 0..60 {
+            g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
+        }
+        assert_eq!(g.state, State::Ride);
     }
 }
