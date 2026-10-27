@@ -50,3 +50,17 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
     rgb = mix(rgb, pc.fog.rgb, f);
     return vec4<f32>(rgb, 1.0);
 }
+
+// Soft alpha-blended mist puffs. `uv` holds the quad's own 0..1 coordinates (not the
+// atlas) so the falloff is smooth; colour.a is the puff's opacity.
+@fragment
+fn fs_mist(i: VOut) -> @location(0) vec4<f32> {
+    let q = i.uv * 2.0 - 1.0;
+    var a = clamp(1.0 - dot(q, q), 0.0, 1.0);
+    a = a * a;
+    // Thin out right in front of the camera so riding through a puff doesn't pop.
+    let d = distance(i.world, pc.cam.xyz);
+    a = a * smoothstep(1.0, 6.0, d) * i.color.a;
+    let rgb = mix(i.color.rgb, pc.fog.rgb, smoothstep(pc.params.x, pc.params.y, d));
+    return vec4<f32>(rgb, a);
+}

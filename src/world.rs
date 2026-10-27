@@ -612,13 +612,27 @@ impl World {
 
 fn sky(out: &mut Vec<Vertex>) {
     // Moon and stars: drawn unlit and unfogged (alpha 2 flag in the shader).
-    let moon = Mat4::from_translation(Vec3::new(-110.0, 120.0, 280.0)) * Mat4::from_scale(Vec3::splat(26.0));
+    // The moon hangs up and to the left of the house, clear of the cemetery gate as seen from the station.
+    let moon_at = Vec3::new(-176.0, 168.0, 203.0);
+    let moon = Mat4::from_translation(moon_at) * Mat4::from_scale(Vec3::splat(34.0));
     for (n, o, r, u) in FACES.iter() {
         let o = Vec3::from(*o) - 0.5;
         let (r, u) = (Vec3::from(*r), Vec3::from(*u));
         let pts = [o, o + r, o + r + u, o + u].map(|p| moon.transform_point3(p));
         let k = 0.85 + 0.15 * (n[1] as f32 * 0.5 + 0.5);
         push_quad(out, pts, tile_uv(T_MOON), [[k, k, k * 0.95, 2.0]; 4]);
+    }
+    // A blocky two-step halo just behind it, facing the station.
+    let station = Vec3::new(0.0, 3.0, -22.0);
+    let to = (moon_at - station).normalize();
+    let right = to.cross(Vec3::Y).normalize();
+    let up = right.cross(to);
+    for (k, (size, col)) in [(70.0, [0.13, 0.12, 0.24]), (52.0, [0.2, 0.19, 0.32])].iter().enumerate() {
+        let c = moon_at + to * (40.0 - k as f32 * 8.0);
+        let (r, u) = (right * size * 0.5, up * size * 0.5);
+        let pts = [c - r - u, c + r - u, c + r + u, c - r + u];
+        let pts = [pts[1], pts[0], pts[3], pts[2]];
+        push_quad(out, pts, tile_uv(T_WHITE), [[col[0], col[1], col[2], 2.0]; 4]);
     }
     let mut rng = Rng::new(99);
     let center = Vec3::new(0.0, 0.0, 80.0);

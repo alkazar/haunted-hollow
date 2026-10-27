@@ -4,7 +4,7 @@
 use crate::atlas::*;
 use crate::audio::{Music, Sfx, SoundEvent};
 use crate::hud::{Align, Ui};
-use crate::mesh::{push_box, Models};
+use crate::mesh::{hash3, push_box, push_quad, Models, FACES};
 use crate::rng::Rng;
 use crate::track::{Track, RIDE_SECONDS};
 use crate::vk::Vertex;
@@ -222,6 +222,10 @@ pub struct Game {
     fires: Vec<Vec3>,
     /// Witch's cauldrons, whose brew bubbles every frame.
     cauldrons: Vec<Vec3>,
+    /// Cloud layer over the graveyard as (x start, z, length in cells); drifts every frame.
+    clouds: Vec<(f32, f32, f32)>,
+    /// Translucent mist puffs: graveyard, crypt and the hole down into it.
+    mist: Vec<Puff>,
     /// How far the boss doors are open (0 shut .. 1 wide open).
     door_open: f32,
     retries: Vec<(f32, Kind, u64, u32)>,
@@ -344,12 +348,15 @@ impl Game {
             door_open: 0.0,
             fires: vec![],
             cauldrons: vec![],
+            clouds: cloud_runs(),
+            mist: vec![],
             retries: vec![],
             cam_dir: Vec3::Z,
             cam_up: Vec3::Y,
         };
         g.fires = g.world.cells_of(crate::world::b::FIRE);
         g.cauldrons = g.world.cells_of(crate::world::b::CAULDRON);
+        g.mist = mist_puffs(&g.track);
         for k in 0..bots.min(4) {
             g.players[k as usize].joined = true;
             g.players[k as usize].source = Some(SourceId::Bot(k));
@@ -1582,6 +1589,53 @@ impl Game {
         self.world.build_mesh(&self.track)
     }
 
+    /// Flat Minecraft-style clouds drifting slowly over the graveyard. Unfogged (they're
+    /// far beyond the fog), so they fade into the sky colour by hand with distance.
+    fn draw_clouds(&self, out: &mut Vec<Vertex>) {
+        let sky = zone_fog(Zone::Graveyard).0;
+        let drift = self.total_t * CLOUD_SPEED;
+        let span = CLOUD_X1 - CLOUD_X0;
+        let uv = tile_uv(T_WHITE);
+        for &(x0, z, len) in &self.clouds {
+            let x = CLOUD_X0 + (x0 - CLOUD_X0 + drift).rem_euclid(span);
+            let lo = Vec3::new(x, CLOUD_Y, z);
+            let size = Vec3::new(len * CLOUD_CELL, CLOUD_THICK, CLOUD_CELL);
+            let mid = lo + size * 0.5;
+            let fade = smooth((mid - self.cam).length() / 420.0) * 0.85;
+            for (n, o, r, u) in FACES.iter() {
+                // Lit from above by the moon: bright tops, dim sides, dark bellies.
+                let k = match n[1] { 1 => 2.6, -1 => 1.5, _ => 2.0 };
+                let c = [0, 1, 2].map(|i| sky[i] * k + (sky[i] - sky[i] * k) * fade);
+                let corner = |v: Vec3| lo + v * size;
+                let (o, r, u) = (Vec3::from(*o), Vec3::from(*r), Vec3::from(*u));
+                let pts = [corner(o), corner(o + r), corner(o + r + u), corner(o + u)];
+                push_quad(out, pts, uv, [[c[0], c[1], c[2], 2.0]; 4]);
+            }
+        }
+    }
+
+    /// Translucent mist (drawn by the blended mist pipeline), only near where the camera is.
+    pub fn draw_mist(&self, out: &mut Vec<Vertex>) {
+        let t = self.total_t;
+        for p in self.mist.iter().filter(|p| p.zones.contains(&self.zone)) {
+            // Each puff wanders slowly around its spot and breathes in and out.
+            let mut c = p.pos + Vec3::new((t * 0.11 + p.ph).sin() * p.wander, 0.0, (t * 0.08 + p.ph * 1.7).cos() * p.wander * 0.8);
+            let mut a = p.alpha + 0.08 * (t * 0.35 + p.ph * 2.3).sin();
+            // Rising wisps float up from their spot and fade out at the top, over and over.
+            if p.rise > 0.0 {
+                let u = (t * 0.22 + p.ph).fract();
+                c.y += u * p.rise;
+                a *= (u * std::f32::consts::PI).sin();
+            }
+            // Upright, turned about Y to face the camera.
+            let to = Vec3::new(self.cam.x - c.x, 0.0, self.cam.z - c.z).normalize_or_zero();
+            let right = Vec3::Y.cross(to).normalize_or_zero() * p.half.x;
+            let up = Vec3::Y * p.half.y;
+            let pts = [c - right - up, c + right - up, c + right + up, c - right + up];
+            push_quad(out, pts, [0.0, 0.0, 1.0, 1.0], [[p.tint[0], p.tint[1], p.tint[2], a]; 4]);
+        }
+    }
+
     pub fn draw_world(&self, out: &mut Vec<Vertex>) {
         let m = &self.models;
         // Flickering flames in the fireplace and the braziers.
@@ -1653,6 +1707,10 @@ impl Game {
                 let w = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s));
                 push_box(out, &w, T_WHITE, [0.25 * g, g, 0.4 * g], Vec3::ONE, 1.0);
             }
+        }
+
+        if self.zone == Zone::Graveyard {
+            self.draw_clouds(out);
         }
 
         // The grand doors behind the Pumpkin King (each leaf swings into the hall).
@@ -2205,6 +2263,98 @@ impl Game {
         }
         AWARDS[best]
     }
+}
+
+const CLOUD_CELL: f32 = 12.0;
+const CLOUD_Y: f32 = 82.0;
+const CLOUD_THICK: f32 = 5.0;
+const CLOUD_X0: f32 = -330.0;
+const CLOUD_X1: f32 = 330.0;
+const CLOUD_SPEED: f32 = 1.2;
+
+/// One mist puff.
+struct Puff {
+    pos: Vec3,
+    /// Half width and half height of the quad.
+    half: Vec2,
+    ph: f32,
+    alpha: f32,
+    tint: [f32; 3],
+    /// How far it drifts around its spot.
+    wander: f32,
+    /// If > 0, the puff keeps rising this far and fading out.
+    rise: f32,
+    /// Camera zones it's drawn in.
+    zones: &'static [Zone],
+}
+
+/// Mist over the cemetery (station up to the house), a green haze over the crypt floor,
+/// and green wisps curling up out of the hole in the dining-hall floor and down the shaft.
+fn mist_puffs(track: &Track) -> Vec<Puff> {
+    const GREY: [f32; 3] = [0.5, 0.55, 0.68];
+    const GREEN: [f32; 3] = [0.35, 0.75, 0.42];
+    let mut rng = Rng::new(4242);
+    let mut out = vec![];
+    let mut puff = |ph: f32, pos: Vec3, half: Vec2, alpha, tint, wander, rise, zones| {
+        out.push(Puff { pos, half, ph, alpha, tint, wander, rise, zones });
+    };
+    // Graveyard: wide, low puffs just above the grass (ground top is y = 1).
+    for _ in 0..140 {
+        let (x, z) = (rng.range(-30.0, 30.0), rng.range(-28.0, 36.0));
+        let half = Vec2::new(rng.range(3.0, 6.0), 1.0);
+        puff(rng.range(0.0, 6.28), Vec3::new(x, 1.0 + half.y * 0.85, z), half, 0.2, GREY, 1.8, 0.0, &[Zone::Graveyard]);
+    }
+    // Crypt floor (top at y = -17), seen from the bottom of the drop onwards.
+    for _ in 0..90 {
+        let (x, z) = (rng.range(-13.0, 13.0), rng.range(141.0, 175.0));
+        let half = Vec2::new(rng.range(2.5, 5.0), 0.9);
+        puff(rng.range(0.0, 6.28), Vec3::new(x, -17.0 + half.y * 0.85, z), half, 0.22, GREEN, 1.4, 0.0, &[Zone::Drop, Zone::Crypt]);
+    }
+    // Wisps rising out of the hole the track dives into (dining floor at y = 1, z ~128-131).
+    for _ in 0..18 {
+        let pos = Vec3::new(rng.range(-1.8, 1.8), rng.range(-1.5, 0.5), rng.range(127.5, 131.5));
+        let half = Vec2::new(rng.range(1.2, 2.2), rng.range(0.8, 1.3));
+        let rise = rng.range(2.5, 4.0);
+        puff(rng.range(0.0, 6.28), pos, half, 0.32, GREEN, 0.5, rise, &[Zone::Library, Zone::Dining, Zone::Drop]);
+    }
+    // A glowing haze filling the shaft itself, following the track down.
+    for k in 0..16 {
+        let z = 130.0 + k as f32 * 0.75;
+        let rail = track.pos_at(track.dist_at_time(track.time_at_z(z)));
+        let pos = Vec3::new(rail.x + rng.range(-1.5, 1.5), rail.y + 1.2 + rng.range(-0.4, 0.8), z);
+        let half = Vec2::new(rng.range(1.5, 2.5), 1.2);
+        puff(rng.range(0.0, 6.28), pos, half, 0.2, GREEN, 0.4, 0.0, &[Zone::Dining, Zone::Drop]);
+    }
+    out
+}
+
+/// Blobby cloud cover from smoothed value noise, merged into runs along x.
+fn cloud_runs() -> Vec<(f32, f32, f32)> {
+    let noise = |x: i32, z: i32| {
+        let (gx, gz) = (x.div_euclid(4), z.div_euclid(4));
+        let (fx, fz) = (x.rem_euclid(4) as f32 / 4.0, z.rem_euclid(4) as f32 / 4.0);
+        let h = |a: i32, b: i32| hash3(a, 77, b);
+        let top = h(gx, gz) + (h(gx + 1, gz) - h(gx, gz)) * fx;
+        let bot = h(gx, gz + 1) + (h(gx + 1, gz + 1) - h(gx, gz + 1)) * fx;
+        top + (bot - top) * fz + (hash3(x, 78, z) - 0.5) * 0.15
+    };
+    let nx = ((CLOUD_X1 - CLOUD_X0) / CLOUD_CELL) as i32;
+    let mut runs = vec![];
+    for cz in -14..34 {
+        let mut start = None;
+        for cx in 0..=nx {
+            let on = cx < nx && noise(cx, cz) > 0.6;
+            match (on, start) {
+                (true, None) => start = Some(cx),
+                (false, Some(s)) => {
+                    runs.push((CLOUD_X0 + s as f32 * CLOUD_CELL, cz as f32 * CLOUD_CELL, (cx - s) as f32));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    runs
 }
 
 #[cfg(test)]

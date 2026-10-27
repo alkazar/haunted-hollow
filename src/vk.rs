@@ -1,5 +1,6 @@
-//! Vulkan renderer (ash). Two pipelines share one texture atlas:
+//! Vulkan renderer (ash). Three pipelines share one texture atlas:
 //! - `world`: depth-tested voxel geometry (static world mesh + per-frame dynamic mesh)
+//! - `mist`: alpha-blended world-space puffs (depth-tested, not depth-written)
 //! - `overlay`: alpha-blended 2D HUD quads
 //! Everything is drawn as quads with a shared quad index buffer.
 
@@ -64,6 +65,7 @@ pub struct Renderer {
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     world_pipe: vk::Pipeline,
+    mist_pipe: vk::Pipeline,
     ui_pipe: vk::Pipeline,
     desc_pool: vk::DescriptorPool,
     desc_set: vk::DescriptorSet,
@@ -260,8 +262,9 @@ impl Renderer {
 
         let world_spv = include_bytes!(concat!(env!("OUT_DIR"), "/world.spv"));
         let ui_spv = include_bytes!(concat!(env!("OUT_DIR"), "/overlay.spv"));
-        let world_pipe = make_pipeline(&device, render_pass, pipeline_layout, world_spv, true)?;
-        let ui_pipe = make_pipeline(&device, render_pass, pipeline_layout, ui_spv, false)?;
+        let world_pipe = make_pipeline(&device, render_pass, pipeline_layout, world_spv, Pipe::World)?;
+        let mist_pipe = make_pipeline(&device, render_pass, pipeline_layout, world_spv, Pipe::Mist)?;
+        let ui_pipe = make_pipeline(&device, render_pass, pipeline_layout, ui_spv, Pipe::Overlay)?;
 
         let cmd_pool = device
             .create_command_pool(
@@ -301,6 +304,7 @@ impl Renderer {
             set_layout,
             pipeline_layout,
             world_pipe,
+            mist_pipe,
             ui_pipe,
             desc_pool: vk::DescriptorPool::null(),
             desc_set: vk::DescriptorSet::null(),
@@ -816,6 +820,7 @@ impl Renderer {
         &mut self,
         world_pc: &PushConstants,
         dyn_verts: &[Vertex],
+        mist_verts: &[Vertex],
         ui_pc: &PushConstants,
         ui_verts: &[Vertex],
         clear: [f32; 3],
@@ -852,6 +857,13 @@ impl Renderer {
             // Upload dynamic geometry.
             let dyn_quads = (dyn_verts.len() / 4).min(MAX_DYN_QUADS);
             std::ptr::copy_nonoverlapping(dyn_verts.as_ptr(), self.dyn_vb[f].ptr as *mut Vertex, dyn_quads * 4);
+            // Mist shares the dynamic buffer, packed straight after the opaque quads.
+            let mist_quads = (mist_verts.len() / 4).min(MAX_DYN_QUADS - dyn_quads);
+            std::ptr::copy_nonoverlapping(
+                mist_verts.as_ptr(),
+                (self.dyn_vb[f].ptr as *mut Vertex).add(dyn_quads * 4),
+                mist_quads * 4,
+            );
             let ui_quads = (ui_verts.len() / 4).min(MAX_UI_QUADS);
             std::ptr::copy_nonoverlapping(ui_verts.as_ptr(), self.ui_vb[f].ptr as *mut Vertex, ui_quads * 4);
 
@@ -902,6 +914,13 @@ impl Renderer {
             if dyn_quads > 0 {
                 self.device.cmd_bind_vertex_buffers(cb, 0, &[self.dyn_vb[f].buf], &[0]);
                 self.device.cmd_draw_indexed(cb, dyn_quads as u32 * 6, 1, 0, 0, 0);
+            }
+            // Mist, after everything opaque.
+            if mist_quads > 0 {
+                self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.mist_pipe);
+                self.push(cb, world_pc);
+                self.device.cmd_bind_vertex_buffers(cb, 0, &[self.dyn_vb[f].buf], &[0]);
+                self.device.cmd_draw_indexed(cb, mist_quads as u32 * 6, 1, 0, (dyn_quads * 4) as i32, 0);
             }
             // HUD.
             if ui_quads > 0 {
@@ -1060,6 +1079,7 @@ impl Drop for Renderer {
             self.device.free_memory(self.atlas.mem, None);
             self.device.destroy_descriptor_pool(self.desc_pool, None);
             self.device.destroy_pipeline(self.world_pipe, None);
+            self.device.destroy_pipeline(self.mist_pipe, None);
             self.device.destroy_pipeline(self.ui_pipe, None);
             self.device.destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_descriptor_set_layout(self.set_layout, None);
@@ -1072,13 +1092,23 @@ impl Drop for Renderer {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Pipe {
+    World,
+    Mist,
+    Overlay,
+}
+
 fn make_pipeline(
     device: &Device,
     render_pass: vk::RenderPass,
     layout: vk::PipelineLayout,
     spv: &[u8],
-    world: bool,
+    kind: Pipe,
 ) -> Result<vk::Pipeline, String> {
+    let world = kind == Pipe::World;
+    let depth_test = kind != Pipe::Overlay;
+    let fs_name = if kind == Pipe::Mist { c"fs_mist" } else { c"fs_main" };
     unsafe {
         let code = ash::util::read_spv(&mut Cursor::new(spv)).map_err(|e| e.to_string())?;
         let module = device
@@ -1092,7 +1122,7 @@ fn make_pipeline(
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(module)
-                .name(c"fs_main"),
+                .name(fs_name),
         ];
         let binding = [vk::VertexInputBindingDescription {
             binding: 0,
@@ -1116,7 +1146,7 @@ fn make_pipeline(
             .line_width(1.0);
         let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
         let ds = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(world)
+            .depth_test_enable(depth_test)
             .depth_write_enable(world)
             .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
         let blend = [if world {

@@ -117,6 +117,7 @@ struct App {
     shots_done: usize,
     fps_acc: (f32, u32),
     dyn_buf: Vec<vk::Vertex>,
+    mist_buf: Vec<vk::Vertex>,
 }
 
 impl App {
@@ -260,6 +261,8 @@ impl App {
         // Build dynamic geometry and HUD.
         self.dyn_buf.clear();
         self.game.draw_world(&mut self.dyn_buf);
+        self.mist_buf.clear();
+        self.game.draw_mist(&mut self.mist_buf);
         let mut ui = hud::Ui::new(screen.x, screen.y);
         self.game.draw_ui(&mut ui);
 
@@ -276,7 +279,7 @@ impl App {
         let capture = self.shots_done < self.args.shots.len() && self.sim_time >= self.args.shots[self.shots_done];
         let win_size = self.window.as_ref().map(|w| w.inner_size()).map(|s| (s.width, s.height)).unwrap_or(self.args.size);
         if let Some(r) = self.renderer.as_mut() {
-            if let Some(cap) = r.draw(&world_pc, &self.dyn_buf, &ui_pc, &ui.v, f.fog, capture, win_size) {
+            if let Some(cap) = r.draw(&world_pc, &self.dyn_buf, &self.mist_buf, &ui_pc, &ui.v, f.fog, capture, win_size) {
                 let path = format!("{}/shot_{:06.1}.ppm", self.args.shot_dir, self.args.shots[self.shots_done]);
                 save_ppm(&path, &cap);
                 eprintln!(
@@ -467,6 +470,7 @@ fn main() {
         shots_done: 0,
         fps_acc: (0.0, 0),
         dyn_buf: Vec::with_capacity(200_000),
+        mist_buf: Vec::with_capacity(4096),
     };
     event_loop.run_app(&mut app).expect("run");
     // Drop the renderer before the window.
