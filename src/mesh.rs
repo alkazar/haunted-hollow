@@ -179,7 +179,8 @@ pub struct Models {
     pub boss_head_angry: Model,
     pub boss_cape: Model,
     pub boss_hand: Model,
-    pub cart: Model,
+    /// The two leaves of the boss doors: [left, right].
+    pub door: [Model; 2],
 }
 
 impl Models {
@@ -216,6 +217,7 @@ impl Models {
             boss_head: boss_head(0xffe84a),
             boss_head_angry: boss_head(0xff2a1a),
             boss_cape: boss_cape(),
+            door: [door_leaf(false), door_leaf(true)],
             boss_hand: Model::build(5, 5, 4, 0.42, |x, y, z| {
                 if y == 4 && (x == 0 || x == 4) {
                     return None;
@@ -228,7 +230,6 @@ impl Models {
                 }
                 vox(0xf4f4f8, 0.55)
             }),
-            cart: cart(),
         }
     }
 }
@@ -478,29 +479,42 @@ fn boss_cape() -> Model {
     })
 }
 
-fn cart() -> Model {
-    // The riders' cart: a wide tub whose front wall and sides frame the bottom of
-    // the screen. Model faces +Z; the camera sits inside it.
-    Model::build(30, 7, 14, 0.15, |x, y, z| {
-        let side = x <= 1 || x >= 28;
-        let front = z >= 12;
-        let rim = y == 6;
-        if !(side || front || y == 0) {
+/// One leaf of the Pumpkin King's grand arched doors: red planks, gold trim and
+/// straps with studs, a ring handle, and half of a gold jack-o'-lantern crest so the
+/// two leaves form a whole pumpkin when closed. Built in 0.5 m voxels; voxel x 0 is
+/// the hinge side of the left leaf and the centre side of the right leaf.
+fn door_leaf(right: bool) -> Model {
+    use crate::world::{in_doorway, DOOR_FLOOR, DOOR_HALF};
+    let vw = (DOOR_HALF * 2.0) as i32; // voxels across one leaf
+    let vh = 26;
+    Model::build(vw, vh, 1, 0.5, move |ix, iy, _| {
+        // Distance of this voxel's centre from the middle of the doorway.
+        let k = if right { ix } else { vw - 1 - ix };
+        let cx = k as f32 * 0.5 + 0.25;
+        let cy = DOOR_FLOOR + iy as f32 * 0.5 + 0.25;
+        if !in_doorway(cx, cy, 0.0) {
             return None;
         }
-        if rim && (side || front) {
-            // Gold trim with little studs.
-            return if (x + z) % 4 == 0 { vox(0xfff0a0, 0.7) } else { vox(0xd8a020, 0.55) };
+        let edge = !in_doorway(cx, cy + 0.5, 0.0) || !in_doorway(cx + 0.5, cy, 0.0) || k == 0 || iy == 0;
+        let strap = iy == 4 || iy == 12;
+        let crest = cx * cx + (cy - (DOOR_FLOOR + 9.0)).powi(2) <= 2.6f32.powi(2);
+        let crest_face = crest && ((iy == 18 || iy == 19) && (k == 2 || k == 3) || iy == 15 && k < 4 || iy == 16 && k == 3);
+        if edge {
+            return vox(0xf0c040, 0.45);
         }
-        if front && z == 12 && y >= 2 && y <= 4 && (x == 5 || x == 24) {
-            return vox(0xffd84a, 1.0); // small lanterns on the inside of the front
+        if crest_face {
+            return vox(0xffe680, 0.9);
         }
-        if front && y == 3 && z == 13 {
-            return vox(0xff9a1e, 0.5); // orange stripe
+        if crest {
+            return vox(0xe0a020, 0.5);
         }
-        if (side || front) && y == 1 {
-            return vox(0x4a0c18, 0.4);
+        if strap {
+            return if k % 3 == 1 { vox(0xfff0a0, 0.6) } else { vox(0xc89020, 0.4) };
         }
-        vox(0x7a1424, 0.45)
+        if k == 1 && iy == 9 {
+            return vox(0xf0c040, 0.6); // ring handle
+        }
+        // Red planks with darker grooves.
+        if k % 2 == 0 { vox(0x9a1424, 0.2) } else { vox(0x7c0e1c, 0.2) }
     })
 }

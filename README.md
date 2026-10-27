@@ -4,7 +4,9 @@ A Halloween on-rails shooter for **1–4 players with Wii Remotes**, made for yo
 Everyone rides a roller-coaster cart through a blocky haunted-house attraction — graveyard,
 grand foyer, haunted library, dining hall, a big drop into the crypt — and pops ghosts, bats,
 pumpkins, flying books, waving skeletons and dangling spiders into candy confetti. At the end
-the **Pumpkin King** rises from his pumpkin patch and blocks the track until the riders beat him.
+the **Pumpkin King** rises from his pumpkin patch in front of a pair of grand red-and-gold doors
+and blocks the track until the riders beat him. Then the doors swing open and the ride rolls out
+through them, down a lantern-lit hall, to the score screen.
 
 Nobody can lose: there is no health and no game over, just a score per player and a fun
 award on the results screen ("GHOST CATCHER", "BAT BOPPER", "BOSS BUSTER"...).
@@ -15,16 +17,18 @@ award on the results screen ("GHOST CATCHER", "BAT BOPPER", "BOSS BUSTER"...).
 * Each player has their own crosshair colour: **P1 red, P2 blue, P3 green, P4 yellow**.
 * Kid-friendly aiming: generous hit areas with a minimum on-screen size, targets gently pulse.
 * Rust + Vulkan (ash) + winit, Minecraft-style voxel world with procedural 16×16 textures,
-  coloured flood-fill block lighting, smooth lighting/ambient occlusion and a cart lantern.
+  coloured flood-fill block lighting, smooth lighting/ambient occlusion and a rider's lantern.
   No asset files: all textures, models and the world are generated in code.
-* Music and sound: original tunes (spooky theremin title, skeleton-xylophone ride theme,
+* Music and sound: original tunes (spooky theremin title, creepy music-box ride theme,
   brassy boss battle, victory fanfare, happy results theme) and ~20 effects, all synthesized in
   code at start-up. Sound goes out through ALSA, loaded at runtime (works with PipeWire /
   PulseAudio via their ALSA bridge). `--mute` turns it off, `HAUNTED_ALSA_DEVICE=hw:1,0`
   picks a different device, and `--dump-audio DIR` writes every track and effect as WAV files.
-* Targets are only spawned where every rider can see and reach them: each candidate spot is
-  checked against the cart's predicted camera over the target's whole life (on screen, not
-  behind the cart or HUD, not blocked by walls).
+* Targets are only spawned where every rider can see and reach them: each spot is checked
+  against the ride's predicted camera over the target's whole life. The whole body has to be in
+  open air (never inside a wall, the floor or a prop), every edge has to be visible (nothing in
+  the way), it can't overlap another target, and it must stay clear of the score panels and the
+  boss bar. New targets are steered to different parts of the screen so they don't bunch up.
 
 ## Build & run
 
@@ -63,7 +67,8 @@ The game reads remotes through the kernel's `hid-wiimote` driver (in every mains
 
 Remotes are hot-plugged at any time. On the title screen each child presses **A** to join and
 gets the next colour; anyone presses **+** to start (it also auto-starts 15 s after the first
-join). Late arrivals can press A mid-ride to jump in.
+join). Late arrivals can press A mid-ride to jump in. After the score screen everyone goes
+back to the title and presses **A** again to play another round.
 
 | Button | Action |
 |---|---|
@@ -101,11 +106,11 @@ Other handy flags: `--bots N` (computer players, an attract/demo mode), `--boss`
 | File | What |
 |---|---|
 | `src/vk.rs` | Vulkan renderer: swapchain, world + HUD pipelines, atlas, quad batching, screenshots |
-| `shaders/*.wgsl` | World shader (baked light, cart lantern, fog) and HUD shader |
+| `shaders/*.wgsl` | World shader (baked light, rider's lantern, fog) and HUD shader |
 | `src/atlas.rs` | Procedural Minecraft-style block textures + 8×8 pixel font |
 | `src/world.rs` | Voxel world generation, RGB flood-fill lighting + moonlight, meshing with AO |
 | `src/track.rs` | Coaster spline, speed profile normalised to a 120 s ride, banking |
-| `src/mesh.rs` | Voxel models: ghost, bat, pumpkin, skeleton, spider, books, candy, Pumpkin King, cart |
+| `src/mesh.rs` | Voxel models: ghost, bat, pumpkin, skeleton, spider, books, candy, Pumpkin King, boss doors |
 | `src/game.rs` | Spawning, behaviours, hit testing, scoring, boss, title/results screens |
 | `src/synth.rs` | Tiny synthesizer: instruments, drums, the songs and every sound effect |
 | `src/audio.rs` | Real-time mixer thread, crossfading music, ALSA output via dlopen |

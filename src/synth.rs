@@ -215,6 +215,8 @@ pub struct Song {
     pub snare: &'static str,
     pub hat: &'static str,
     pub organ_vol: f32,
+    /// Instrument for the held chords (Organ or Pad).
+    pub chord_inst: Inst,
     pub bells: bool,
     pub passes: u32,
 }
@@ -264,7 +266,7 @@ pub fn render_song(s: &Song, looping: bool) -> Buf {
             // Organ chord.
             if s.organ_vol > 0.0 {
                 for (k, iv) in [0, if minor { 3 } else { 4 }, 7].iter().enumerate() {
-                    note(&mut buf, tb, semis(rf, *iv), bar * 0.95, Inst::Organ, s.organ_vol, -0.4 + k as f32 * 0.4, looping);
+                    note(&mut buf, tb, semis(rf, *iv), bar * 0.95, s.chord_inst, s.organ_vol, -0.4 + k as f32 * 0.4, looping);
                 }
             }
             // Bass.
@@ -319,25 +321,29 @@ pub const TITLE: Song = Song {
     snare: "................",
     hat: "................",
     organ_vol: 0.22,
+    chord_inst: Inst::Organ,
     bells: true,
     passes: 2,
 };
 
 pub const RIDE: Song = Song {
-    bpm: 132.0,
-    chords: &[("D", true), ("Bb", false), ("G", true), ("A", false), ("D", true), ("Bb", false), ("G", true), ("A", false)],
-    melody: "D5 .5 F5 .5 A5 1 G5 .5 F5 .5 E5 1  F5 .5 D5 .5 Bb4 1 C5 .5 D5 .5 F5 1  \
-             G5 .5 Bb5 .5 A5 .5 G5 .5 F5 1 D5 1  E5 .5 C#5 .5 E5 .5 A5 .5 G5 1 R 1  \
-             D6 .5 A5 .5 F5 .5 D5 .5 A5 1 F5 1  Bb5 .5 F5 .5 D5 .5 F5 .5 Bb5 1 A5 1  \
-             G5 .75 A5 .25 Bb5 .5 G5 .5 E5 .5 G5 .5 C#5 1  A5 .5 G5 .5 F5 .5 E5 .5 D5 2",
-    lead: Inst::Xylo,
-    lead_vol: 0.75,
-    bass: "r...f...r...f...",
-    kick: "x.......x.......",
-    snare: "....x.......x...",
-    hat: "x.x.x.x.x.x.x.x.",
-    organ_vol: 0.1,
-    bells: false,
+    // A creepy music box over a dark pad: D harmonic minor, a slow clock-tick beat,
+    // a chromatic creep in the melody and a spooky E-flat chord before each turnaround.
+    bpm: 108.0,
+    chords: &[("D", true), ("D", true), ("Bb", false), ("A", false), ("G", true), ("D", true), ("Eb", false), ("A", false)],
+    melody: "D5 .5 F5 .5 A5 .5 G#5 .5 A5 1 F5 1  E5 .5 F5 .5 E5 .5 D5 .5 C#5 1 A4 1  \
+             Bb4 .5 D5 .5 F5 .5 E5 .5 F5 1 D5 1  C#5 .5 E5 .5 G5 .5 F5 .5 E5 2  \
+             G5 .5 Bb5 .5 D6 .5 C#6 .5 D6 1 Bb5 1  A5 .5 F5 .5 D5 .5 F5 .5 A5 1 R 1  \
+             G5 .5 Eb5 .5 Bb4 .5 Eb5 .5 D5 1 Eb5 1  C#5 .5 D5 .5 E5 .5 G5 .5 F5 .5 E5 .5 C#5 .5 A4 .5",
+    lead: Inst::Bell,
+    lead_vol: 0.9,
+    bass: "r.......f...t...",
+    kick: "x.....t.x.......",
+    snare: "............x...",
+    hat: "x...x...x...x...",
+    organ_vol: 0.4,
+    chord_inst: Inst::Pad,
+    bells: true,
     passes: 2,
 };
 
@@ -355,6 +361,7 @@ pub const BOSS: Song = Song {
     snare: "....x.......x...",
     hat: "x.x.x.x.x.x.x.x.",
     organ_vol: 0.12,
+    chord_inst: Inst::Organ,
     bells: false,
     passes: 2,
 };
@@ -371,6 +378,7 @@ pub const RESULTS: Song = Song {
     snare: "....c.......c...",
     hat: "..x...x...x...x.",
     organ_vol: 0.0,
+    chord_inst: Inst::Organ,
     bells: true,
     passes: 2,
 };
@@ -580,12 +588,6 @@ pub fn sfx_whoosh() -> Buf {
         b.data[k * 2 + 1] = v * (1.0 + pan) * 0.5;
     }
     b.normalize(0.45);
-    b
-}
-
-pub fn sfx_wheee() -> Buf {
-    let mut b = sweep(1.4, 500.0, 1500.0, 1.0, |p| sine(p) + 0.15 * sine(p * 3.0));
-    b.normalize(0.35);
     b
 }
 

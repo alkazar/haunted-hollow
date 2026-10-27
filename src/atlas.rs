@@ -57,6 +57,10 @@ pub const T_SKULLS: u8 = 49;
 pub const T_POT: u8 = 50;
 pub const T_SLIME: u8 = 51;
 pub const T_CANDY2: u8 = 52;
+pub const T_PAINTING3: u8 = 53;
+pub const T_SHIELD: u8 = 54;
+pub const T_GOLD: u8 = 55;
+pub const T_MIRROR: u8 = 56;
 
 /// UV rectangle (u0, v0, u1, v1) for a tile.
 pub fn tile_uv(t: u8) -> [f32; 4] {
@@ -418,7 +422,8 @@ pub fn build() -> Vec<u8> {
         (mul(hex(0x6b4a2a), 0.8 + hash(x, y, 52) * 0.3), if on { 1.0 } else { 0.0 })
     });
     p.tile(T_MUSHROOM, |x, y| {
-        let cap = y >= 4 && y <= 8 && ((x as f32 - 7.5).abs() < (9 - y) as f32 * 1.2 + 2.0);
+        let half = 7.2 * (1.0 - ((y as f32 - 8.6) / 5.0).powi(2)).max(0.0).sqrt();
+        let cap = (4..=8).contains(&y) && (x as f32 - 7.5).abs() < half;
         let stem = (x == 7 || x == 8) && y > 8 && y < 16;
         let dot = cap && hash(x / 2, y / 2, 53) > 0.6;
         if cap {
@@ -491,7 +496,7 @@ pub fn build() -> Vec<u8> {
         (c, 1.0)
     });
     p.tile(T_CHAIN, |x, y| {
-        let link = if (y / 4) % 2 == 0 { (x == 6 || x == 9) && y % 4 != 0 || (x >= 6 && x <= 9 && y % 4 == 0) } else { (x == 7 || x == 8) };
+        let link = if (y / 4) % 2 == 0 { (x == 6 || x == 9) && y % 4 != 0 || (x >= 6 && x <= 9 && y % 4 == 0) } else { x == 7 || x == 8 };
         (mul(hex(0x7a7e88), 0.8 + hash(x, y, 62) * 0.3), if link { 1.0 } else { 0.0 })
     });
     p.tile(T_SKULLS, |x, y| {
@@ -507,6 +512,77 @@ pub fn build() -> Vec<u8> {
         (mul(if band { hex(0xd8a020) } else { hex(0x8a4a2a) }, 0.85 + hash(x, y, 64) * 0.2), 1.0)
     });
     p.tile(T_SLIME, |x, y| (mix(hex(0x40ff70), hex(0xb0ffb0), hash(x / 2, y / 2, 65)), 1.0));
+    p.tile(T_PAINTING3, |x, y| {
+        // Moonlit landscape: a haunted house on a hill under a big moon.
+        if !(2..=13).contains(&x) || !(2..=13).contains(&y) {
+            return (mul(hex(0xc89a30), 0.75 + hash(x, y, 70) * 0.3), 1.0);
+        }
+        let moon = (x - 10) * (x - 10) + (y - 5) * (y - 5) <= 3;
+        let hill = y > 10 - ((x as f32 - 6.0) * 0.6).abs() as i32 / 2;
+        let house = (4..=7).contains(&x) && (6..=9).contains(&y) || (x == 5 || x == 6) && y == 5;
+        let window = (x == 5 && y == 7) || (x == 6 && y == 8);
+        let c = if moon {
+            hex(0xf4efd0)
+        } else if window {
+            hex(0xffc040)
+        } else if house {
+            hex(0x1a1420)
+        } else if hill {
+            mul(hex(0x23301e), 0.85 + hash(x, y, 71) * 0.2)
+        } else {
+            mix(hex(0x1c2450), hex(0x3a3070), y as f32 / 12.0)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_SHIELD, |x, y| {
+        // Red and gold crest with a little jack-o'-lantern in the middle.
+        let wall = mul(hex(0x4a3020), 0.85 + hash(x, y, 72) * 0.2);
+        let width = if y < 10 { 6 } else { 6 - (y - 9) };
+        let inside = y >= 2 && y <= 14 && (x as i32 - 7).abs() <= width && (x as i32 - 8).abs() <= width;
+        if !inside {
+            return (wall, 1.0);
+        }
+        let edge = y == 2 || (x as i32 - 7).abs() == width || (x as i32 - 8).abs() == width;
+        let pumpkin = ((x - 7) * (x - 7) + (y - 8) * (y - 8)) <= 6;
+        let face = pumpkin && ((y == 7 && (x == 6 || x == 9)) || (y == 9 && (6..=9).contains(&x)));
+        let c = if edge {
+            hex(0xf0c040)
+        } else if face {
+            hex(0xffe060)
+        } else if pumpkin {
+            hex(0xe07a12)
+        } else if (x + y) % 2 == 0 {
+            hex(0xa01828)
+        } else {
+            hex(0x8a1020)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_GOLD, |x, y| {
+        let edge = x == 0 || y == 0 || x == 15 || y == 15;
+        let shine = (x + y) % 9 == 0 || (x + y) % 9 == 1;
+        // Antique gold: rich but not glaring under torchlight.
+        let c = if edge {
+            hex(0x6e4a10)
+        } else if shine {
+            hex(0xe8cc70)
+        } else {
+            mul(hex(0xb8862a), 0.85 + hash(x / 2, y / 2, 73) * 0.2)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_MIRROR, |x, y| {
+        let frame = !(2..=13).contains(&x) || !(1..=14).contains(&y);
+        let streak = (x + y) % 7 == 0 && !frame;
+        let c = if frame {
+            mul(hex(0xc89a30), 0.8 + hash(x, y, 74) * 0.3)
+        } else if streak {
+            hex(0xd0e0f0)
+        } else {
+            mix(hex(0x5a6a8a), hex(0x8aa0c0), y as f32 / 16.0)
+        };
+        (c, 1.0)
+    });
     p.tile(T_MOON, |x, y| {
         let crater = hash(x / 3, y / 3, 39) > 0.72;
         (mul(hex(0xf4efd0), if crater { 0.85 } else { 1.0 }), 1.0)

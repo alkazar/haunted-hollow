@@ -15,7 +15,7 @@ pub const X1: i32 = 40;
 pub const Y0: i32 = -32;
 pub const Y1: i32 = 44;
 pub const Z0: i32 = -32;
-pub const Z1: i32 = 220;
+pub const Z1: i32 = 250;
 const SX: i32 = X1 - X0;
 const SY: i32 = Y1 - Y0;
 const SZ: i32 = Z1 - Z0;
@@ -68,6 +68,12 @@ pub mod b {
     pub const SKULLS: u8 = 44;
     pub const CAULDRON: u8 = 45;
     pub const CANDY2: u8 = 46;
+    pub const PAINTING3: u8 = 47;
+    pub const SHIELD: u8 = 48;
+    pub const GOLD: u8 = 49;
+    pub const MIRROR: u8 = 50;
+    /// Gold that catches the light (boss door frame and pillar bands).
+    pub const GOLD_GLOW: u8 = 51;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -137,6 +143,11 @@ fn props(id: u8) -> Props {
         b::CLOCK => Props { tiles: [T_DARKPLANK, T_CLOCK, T_DARKPLANK], ..cube(0) },
         b::CANDY => cube(T_CANDY),
         b::CANDY2 => cube(T_CANDY2),
+        b::PAINTING3 => Props { tiles: [T_DARKPLANK, T_PAINTING3, T_DARKPLANK], ..cube(0) },
+        b::SHIELD => Props { tiles: [T_DARKPLANK, T_SHIELD, T_DARKPLANK], ..cube(0) },
+        b::GOLD => Props { glow: false, ..cube(T_GOLD) },
+        b::GOLD_GLOW => Props { glow: true, ..cube(T_GOLD) },
+        b::MIRROR => Props { tiles: [T_GOLD, T_MIRROR, T_GOLD], ..cube(0) },
         b::IRON => cube(T_IRON),
         b::SKULLS => cube(T_SKULLS),
         b::CAKE => Props { opaque: false, shape: Shape::Small, tiles: [T_CAKE_TOP, T_CAKE_SIDE, T_CAKE_SIDE], size: [0.8, 0.5, 0.8], ..cube(0) },
@@ -187,6 +198,20 @@ impl World {
 
     pub fn solid_at(&self, p: Vec3) -> bool {
         props(self.get(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)).opaque
+    }
+
+    /// True if anything (wall, prop, web, candle...) is in this spot. Low ground cover
+    /// like grass doesn't count. Used to keep targets from spawning inside things.
+    pub fn occupied(&self, p: Vec3) -> bool {
+        let id = self.get(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        // Thin things (candle stubs, hanging chains) are fine to float next to.
+        !matches!(id, b::AIR | b::TALLGRASS | b::DEADBUSH | b::MUSHROOM | b::CANDLE | b::CHAIN)
+    }
+
+    /// True if this spot would hide a target behind it (walls and chunky props).
+    pub fn blocks_view(&self, p: Vec3) -> bool {
+        let id = self.get(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        props(id).opaque || matches!(id, b::FENCE | b::LANTERN | b::CAULDRON | b::POT | b::CAKE | b::BANNER)
     }
 
     fn set(&mut self, x: i32, y: i32, z: i32, id: u8) {
@@ -658,6 +683,13 @@ pub fn generate(track: &Track) -> World {
     crypt(&mut w, &mut rng);
     lair(&mut w, &mut rng);
     decorate(&mut w, &mut rng, &path);
+    boss_doors(&mut w);
+    // Hang decorations on the bare walls of every indoor room.
+    decorate_walls(&mut w, &mut rng, &path, -16, 16, 0, 18, 40, 70, b::WALL_PURPLE, &[4, 9, 14]);
+    decorate_walls(&mut w, &mut rng, &path, -16, 16, 0, 18, 71, 100, b::WALL_GREEN, &[4, 9, 14]);
+    decorate_walls(&mut w, &mut rng, &path, -16, 16, 0, 18, 101, 130, b::STONEBRICK, &[4, 9, 14]);
+    decorate_walls(&mut w, &mut rng, &path, -14, 14, -18, -6, 140, 176, b::CRYPT, &[4, 8]);
+    decorate_walls(&mut w, &mut rng, &path, -26, 26, -18, -1, 177, 214, b::PURPLE, &[5, 10]);
     carve(&mut w, track);
     after_carve(&mut w, track);
     w.compute_light();
@@ -1130,12 +1162,75 @@ fn lair(w: &mut World, rng: &mut Rng) {
             w.set(x + 2, -9, z, b::LANTERN);
         }
     }
-    // The Pumpkin King's throne steps.
-    for k in 0..4 {
-        w.fill(-8 + k, 8 - k, -17, -17 + k, 205 + k * 2, 213, b::PURPLE);
+}
+
+/// Door opening geometry (shared with the door models in mesh.rs): the doorway is
+/// `DOOR_HALF` wide either side of x = 0, straight up to `DOOR_SPRING`, then a round arch.
+pub const DOOR_HALF: f32 = 5.0;
+pub const DOOR_FLOOR: f32 = -17.0;
+pub const DOOR_SPRING: f32 = -9.0;
+pub const DOOR_Z: f32 = 214.5;
+
+pub fn in_doorway(x: f32, y: f32, grow: f32) -> bool {
+    let r = DOOR_HALF + grow;
+    y >= DOOR_FLOOR - grow && x.abs() <= r && (y <= DOOR_SPRING || x * x + (y - DOOR_SPRING).powi(2) <= r * r)
+}
+
+/// The grand red-and-gold doors behind the Pumpkin King, and the exit hall beyond.
+/// (The door leaves themselves are animated models drawn by the game.)
+fn boss_doors(w: &mut World) {
+    // Clear the area in front of the doors of any random props.
+    for z in 204..=213 {
+        for y in -17..=-2 {
+            for x in -11..=11 {
+                w.set(x, y, z, b::AIR);
+            }
+        }
     }
-    w.set_meta(-6, -13, 212, b::PUMPKIN, 5);
-    w.set_meta(6, -13, 212, b::PUMPKIN, 5);
+    // Exit hall beyond the doors, lit by lanterns, with a glowing way out at the end.
+    w.room(-7, 7, -18, -5, 214, 249, b::PURPLE, b::STONEBRICK, b::PURPLE);
+    w.fill(-26, 26, -18, -1, 214, 214, b::PURPLE);
+    for z in (218..248).step_by(5) {
+        for x in [-6, 6] {
+            w.set(x, -11, z, b::LANTERN);
+            w.set(x, -14, z + 2, b::BANNER);
+            w.set(x, -13, z + 2, b::BANNER);
+        }
+    }
+    w.fill(-6, 6, -17, -6, 249, 249, b::WINDOW_LIT);
+    // Royal red carpet from the lair up to the doors and down the hall.
+    for z in 186..249 {
+        for x in -3..=2 {
+            let id = if x == -3 || x == 2 { b::GOLD } else { b::CARPET };
+            w.set(x, -18, z, id);
+        }
+    }
+    // Cut the arched doorway and wrap it in a thick gold frame.
+    for y in -17..=-1 {
+        for x in -8..=7 {
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            if in_doorway(cx, cy, 0.0) {
+                w.set(x, y, 214, b::AIR);
+            } else if in_doorway(cx, cy, 1.6) {
+                w.set(x, y, 214, b::GOLD_GLOW);
+                w.set(x, y, 213, b::GOLD_GLOW);
+            }
+        }
+    }
+    // Banded pillars either side with braziers in front.
+    for px in [-10, 9] {
+        for y in -17..=-2 {
+            let id = if (y + 17) % 4 == 3 { b::GOLD_GLOW } else { b::PURPLE };
+            w.fill(px, px + 1, y, y, 212, 213, id);
+        }
+        w.set(px, -10, 211, b::LANTERN);
+        w.set(px + 1, -10, 211, b::LANTERN);
+        let bx = if px < 0 { -13 } else { 12 };
+        w.fill(bx, bx, -17, -16, 211, 211, b::GOLD);
+        w.set(bx, -15, 211, b::FIRE);
+    }
+    w.set_meta(-6, -17, 212, b::PUMPKIN, 5);
+    w.set_meta(5, -17, 212, b::PUMPKIN, 5);
 }
 
 /// Clears the ride's tunnel along the track (doorways appear wherever it crosses walls).
@@ -1442,4 +1537,122 @@ fn decorate(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
     scatter(w, rng, 160, (-25, 25), -17, (178, 213), &[b::GRASS], &ground);
     banners(w, -25, (-6, -5), (180, 212), 6);
     banners(w, 25, (-6, -5), (180, 212), 6);
+}
+
+/// True if a wall spot is close to the ride (the tunnel carve would cut a decoration in half).
+fn near_ride(path: &[Vec3], x: i32, y: i32, z: i32) -> bool {
+    let p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+    path.iter().any(|q| (q.x - p.x).powi(2) + (q.z - p.z).powi(2) < 4.0f32.powi(2) && (p.y - q.y) > -3.0 && (p.y - q.y) < 7.0)
+}
+
+/// Hangs decorations on a room's bare walls: gold-framed portraits and paintings,
+/// crest shields between banners, mirrors, shelves with pots and candles, torch
+/// sconces and clocks. `x0..x1`/`z0..z1` are the wall coordinates, `y0` the floor.
+#[allow(clippy::too_many_arguments)]
+fn decorate_walls(w: &mut World, rng: &mut Rng, path: &[Vec3], x0: i32, x1: i32, y0: i32, y1: i32, z0: i32, z1: i32, wall: u8, bands: &[i32]) {
+    // (wall line start, tangent, inward normal, length)
+    let walls = [
+        ((x0, z0 + 1), (0, 1), (1, 0), z1 - z0 - 1),
+        ((x1, z0 + 1), (0, 1), (-1, 0), z1 - z0 - 1),
+        ((x0 + 1, z0), (1, 0), (0, 1), x1 - x0 - 1),
+        ((x0 + 1, z1), (1, 0), (0, -1), x1 - x0 - 1),
+    ];
+    for &((sx, sz), (tx, tz), (nx, nz), len) in &walls {
+        for &band in bands {
+            let y = y0 + band;
+            if y + 2 >= y1 {
+                continue;
+            }
+            let mut u = 2 + rng.int(0, 2);
+            while u < len - 2 {
+                let at = |du: i32| (sx + tx * (u + du), sz + tz * (u + du));
+                // Every cell this item touches must be bare wall with open air in front.
+                let free = |w: &World, du: i32, dy: i32| -> bool {
+                    let (x, z) = at(du);
+                    w.get(x, y + dy, z) == wall && w.is_air(x + nx, y + dy, z + nz) && !near_ride(path, x, y + dy, z)
+                };
+                let pick = rng.int(0, 5);
+                let placed = match pick {
+                    // Gold-framed portrait or painting (3x3).
+                    0 | 1 => {
+                        if (-1..=1).all(|du| (-1..=1).all(|dy| free(w, du, dy))) {
+                            for du in -1..=1 {
+                                for dy in -1..=1 {
+                                    let (x, z) = at(du);
+                                    w.set(x, y + dy, z, b::GOLD);
+                                }
+                            }
+                            let (x, z) = at(0);
+                            let art = [b::PORTRAIT, b::PORTRAIT2, b::PAINTING3][rng.int(0, 2) as usize];
+                            w.set(x, y, z, art);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    // Crest shield between two hanging banners.
+                    2 => {
+                        if (-1..=1).all(|du| free(w, du, 0) && free(w, du, -1)) {
+                            let (x, z) = at(0);
+                            w.set(x, y, z, b::SHIELD);
+                            for du in [-1, 1] {
+                                let (x, z) = at(du);
+                                w.set(x + nx, y, z + nz, b::BANNER);
+                                w.set(x + nx, y - 1, z + nz, b::BANNER);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    // Tall gold mirror with a candle sconce either side.
+                    3 => {
+                        if (-1..=2).all(|dy| free(w, 0, dy)) && free(w, -1, 0) && free(w, 1, 0) {
+                            let (x, z) = at(0);
+                            w.set(x, y - 1, z, b::GOLD);
+                            w.set(x, y, z, b::MIRROR);
+                            w.set(x, y + 1, z, b::MIRROR);
+                            w.set(x, y + 2, z, b::GOLD);
+                            for du in [-1, 1] {
+                                let (x, z) = at(du);
+                                w.set(x + nx, y, z + nz, b::TORCH);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    // Wall shelf with pots and a candle on it.
+                    4 => {
+                        if (-1..=1).all(|du| free(w, du, 0) && free(w, du, 1)) {
+                            for du in -1..=1 {
+                                let (x, z) = at(du);
+                                w.set(x + nx, y, z + nz, b::DARKPLANK);
+                                let item = [b::POT, b::CANDLE, b::POT][(du + 1) as usize];
+                                w.set(x + nx, y + 1, z + nz, item);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    // A clock face with torches either side.
+                    _ => {
+                        if (-1..=1).all(|du| free(w, du, 0)) {
+                            let (x, z) = at(0);
+                            w.set(x, y, z, b::CLOCK);
+                            for du in [-1, 1] {
+                                let (x, z) = at(du);
+                                w.set(x + nx, y, z + nz, b::TORCH);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                u += if placed { 4 + rng.int(0, 1) } else { 1 };
+            }
+        }
+    }
 }

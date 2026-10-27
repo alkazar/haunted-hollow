@@ -8,7 +8,7 @@ use crate::mesh::{push_box, Models};
 use crate::rng::Rng;
 use crate::track::{Track, RIDE_SECONDS};
 use crate::vk::Vertex;
-use crate::world::{zone_at, World, Zone};
+use crate::world::{zone_at, World, Zone, DOOR_FLOOR, DOOR_HALF, DOOR_Z};
 use glam::{Mat4, Vec2, Vec3, Vec4Swizzles};
 
 pub const PLAYER_COLORS: [[f32; 3]; 4] = [[1.0, 0.28, 0.28], [0.3, 0.6, 1.0], [0.35, 0.95, 0.4], [1.0, 0.86, 0.2]];
@@ -204,6 +204,10 @@ pub struct Game {
     pub sounds: Vec<SoundEvent>,
     last_spawn_sound: [f32; 8],
     pub spawn_stats: (u32, u32),
+    lane: usize,
+    /// How far the boss doors are open (0 shut .. 1 wide open).
+    door_open: f32,
+    retries: Vec<(f32, Kind, u64, u32)>,
     cam_dir: Vec3,
     cam_up: Vec3,
     pub state: State,
@@ -240,6 +244,14 @@ pub struct Game {
     pub debug_lines: Vec<String>,
     shake: f32,
 }
+
+/// When (seconds into the victory) the boss doors start to open, and how long it takes.
+const DOOR_START: f32 = 1.8;
+const DOOR_TIME: f32 = 2.4;
+/// Length of the ride out through the doors before the score screen.
+const OUTRO_TIME: f32 = 4.8;
+/// Outro cart distance past the boss stop: d = OUTRO_ACCEL * t^2 (doors at ~30 m).
+const OUTRO_ACCEL: f32 = 2.6;
 
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -307,6 +319,9 @@ impl Game {
             sounds: vec![],
             last_spawn_sound: [-9.0; 8],
             spawn_stats: (0, 0),
+            lane: 0,
+            door_open: 0.0,
+            retries: vec![],
             cam_dir: Vec3::Z,
             cam_up: Vec3::Y,
         };
@@ -326,6 +341,8 @@ impl Game {
         self.state_t = 0.0;
         self.ride_t = 0.0;
         self.targets.clear();
+        self.retries.clear();
+        self.door_open = 0.0;
         self.particles.clear();
         self.popups.clear();
         self.boss = None;
@@ -370,7 +387,9 @@ impl Game {
         ];
         let mut rng = Rng::new(4242);
         let mut spawns = vec![];
-        let interval = 1.25 / (1.0 + 0.32 * (n - 1.0));
+        // Scheduled a bit denser than v2 (1.25 s) so that ~25% more targets actually
+        // appear once spots that aren't clearly visible are skipped.
+        let interval = 0.84 / (1.0 + 0.32 * (n - 1.0));
         for (t0, t1, pool, density) in sections {
             if t1 <= t0 {
                 continue;
@@ -448,7 +467,8 @@ impl Game {
     }
 
     /// Predicted camera `ahead` seconds from now (used to place targets in view).
-    fn view_ahead(&self, ahead: f32) -> (Vec3, Mat4) {
+    /// Returns (eye, right, up, view-projection).
+    fn view_ahead(&self, ahead: f32) -> (Vec3, Vec3, Vec3, Mat4) {
         let (eye, dir, up) = if self.state == State::Ride && self.ride_t + ahead < RIDE_SECONDS {
             let t = self.ride_t + ahead;
             let d = self.track.dist_at_time(t);
@@ -460,31 +480,74 @@ impl Game {
             let to = (Vec3::new(boss.x * 0.5, -9.5, boss.z) - eye).normalize_or_zero();
             (eye, dir.lerp(to, 0.3).normalize(), up)
         };
-        (eye, self.proj() * Mat4::look_to_rh(eye, dir, up))
+        let right = dir.cross(up).normalize_or_zero();
+        (eye, right, up, self.proj() * Mat4::look_to_rh(eye, dir, up))
     }
 
-    /// True if no solid block lies between the two points.
+    /// True if nothing that hides a target lies between the two points.
     fn clear_line(&self, a: Vec3, b: Vec3) -> bool {
         let len = a.distance(b);
         let dir = (b - a) / len.max(1e-3);
         let mut t = 0.4;
-        while t < len - 0.6 {
-            if self.world.solid_at(a + dir * t) {
+        while t < len - 0.15 {
+            if self.world.blocks_view(a + dir * t) {
                 return false;
             }
-            t += 0.3;
+            t += 0.25;
         }
         true
     }
 
-    /// Is the point comfortably on screen (not hidden behind the cart or HUD) and unobstructed?
-    fn shootable_from(&self, eye: Vec3, vp: &Mat4, p: Vec3) -> bool {
+    /// Rough size of each target: (half width, extent below its position, extent above).
+    fn extents(kind: Kind) -> (f32, f32, f32) {
+        match kind {
+            Kind::Ghost => (0.85, 0.75, 0.8),
+            Kind::Pumpkin => (0.65, 0.5, 0.9),
+            Kind::Skeleton => (0.55, 0.9, 1.0),
+            Kind::Spider => (0.75, 0.35, 0.55),
+            Kind::Book => (0.65, 0.35, 0.6),
+            Kind::Bat => (0.75, 0.4, 0.35),
+            Kind::Candy => (0.6, 0.35, 0.35),
+        }
+    }
+
+    /// The target's whole body is in open air (not inside a wall, the floor or a prop).
+    fn body_clear(&self, kind: Kind, p: Vec3) -> bool {
+        let (hw, below, above) = Self::extents(kind);
+        for dy in [-below + 0.08, (above - below) * 0.5, above] {
+            for dx in [-hw, 0.0, hw] {
+                for dz in [-hw, 0.0, hw] {
+                    if self.world.occupied(p + Vec3::new(dx, dy, dz)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Screen position (NDC) and clip w of a point if it's comfortably on screen:
+    /// not at the edges, not under the score panels or the boss health bar.
+    fn on_screen(vp: &Mat4, p: Vec3) -> Option<(Vec2, f32)> {
         let c = *vp * p.extend(1.0);
         if c.w < 3.0 || c.w > 38.0 {
-            return false;
+            return None;
         }
         let n = c.xyz() / c.w;
-        n.x.abs() < 0.8 && n.y > -0.42 && n.y < 0.78 && self.clear_line(eye, p)
+        if n.x.abs() < 0.86 && n.y > -0.62 && n.y < 0.74 {
+            Some((n.truncate(), c.w))
+        } else {
+            None
+        }
+    }
+
+    /// Every part of the target (centre and four edges) can be seen from the eye.
+    fn fully_visible(&self, eye: Vec3, right: Vec3, up: Vec3, kind: Kind, p: Vec3) -> bool {
+        let (hw, below, above) = Self::extents(kind);
+        let mid = p + up * ((above - below) * 0.5);
+        [mid, mid + right * hw * 0.8, mid - right * hw * 0.8, p + up * above * 0.8, p - up * below * 0.8]
+            .iter()
+            .all(|&q| self.clear_line(eye, q))
     }
 
     /// Where a target is at a given age (ignoring appear/leave animation).
@@ -501,72 +564,129 @@ impl Game {
         }
     }
 
-    /// Picks a spot for a new target that every player can actually see and shoot for
-    /// (nearly) its whole life: candidates are tested against the predicted camera.
-    fn spawn_target(&mut self, kind: Kind, seed: u64, side_sign: f32, near: Option<Vec3>) {
+    /// Screen "lanes" new targets are steered toward, so they spread across the
+    /// screen instead of bunching in the middle.
+    const LANES: [f32; 10] = [-0.6, 0.55, -0.2, 0.3, 0.72, -0.45, 0.05, 0.45, -0.72, -0.05];
+
+    /// Picks a spot for a new target that every player can see and shoot for its whole
+    /// life: in open air, never behind walls or props, not overlapping other targets,
+    /// and spread out across the screen. Candidates are tested against the camera's
+    /// predicted path.
+    fn spawn_target(&mut self, kind: Kind, seed: u64, _side_sign: f32, near: Option<Vec3>) -> bool {
         let mut rng = Rng::new(seed);
-        let mut best: Option<(u32, Target)> = None;
-        for attempt in 0..48 {
-            let kind = if attempt >= 32 && matches!(kind, Kind::Pumpkin | Kind::Skeleton) { Kind::Ghost } else { kind };
-            let Some(t) = self.candidate(kind, &mut rng, if attempt % 2 == 0 { side_sign } else { -side_sign }, near) else {
-                continue;
-            };
-            let samples = [0.35, t.life * 0.35, t.life * 0.7, t.life - 0.05];
-            let mut score = 0;
-            for &age in &samples {
-                let (eye, vp) = self.view_ahead(age);
-                if self.shootable_from(eye, &vp, Self::motion(&t, age)) {
-                    score += 1;
-                }
-            }
-            if score == samples.len() as u32 {
-                best = Some((score, t));
+        let lane = Self::LANES[self.lane % Self::LANES.len()];
+        let aspect = self.screen.x / self.screen.y.max(1.0);
+        let focal = 1.0 / 35f32.to_radians().tan();
+        // Predicted camera at each sample time (shared by all candidates).
+        let sample_frac = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let mut best: Option<(f32, Target)> = None;
+        let mut valid = 0;
+        for attempt in 0..96 {
+            if valid >= 8 {
                 break;
             }
+            // No floor for them to stand on near the track? A ghost takes their place.
+            let kind = if attempt >= 32 && matches!(kind, Kind::Pumpkin | Kind::Skeleton) { Kind::Ghost } else { kind };
+            // Mostly aim for this spawn's lane; every third try anywhere on screen.
+            let lane_x = if attempt % 3 == 2 { rng.range(-0.75, 0.75) } else { lane };
+            let Some(t) = self.candidate(kind, &mut rng, lane_x, near) else { continue };
+            let (hw, _, _) = Self::extents(kind);
+            let mut ok = true;
+            let mut xs = 0.0;
+            let mut min_sep = f32::MAX;
+            for &f in &sample_frac {
+                let age = (t.life * f).clamp(0.3, t.life - 0.05);
+                let (eye, right, up, vp) = self.view_ahead(age);
+                let p = Self::motion(&t, age);
+                let Some((n, w)) = Self::on_screen(&vp, p) else {
+                    ok = false;
+                    break;
+                };
+                if !self.body_clear(kind, p) || !self.fully_visible(eye, right, up, kind, p) {
+                    ok = false;
+                    break;
+                }
+                xs += n.x;
+                // Keep clear of every other target, in the world and on screen.
+                let r_me = hw * focal / w;
+                for o in &self.targets {
+                    let (ohw, _, _) = Self::extents(o.kind);
+                    let op = Self::motion(o, o.age + age);
+                    if op.distance(p) < (hw + ohw) * 1.25 {
+                        ok = false;
+                        break;
+                    }
+                    if let Some((on, ow)) = Self::on_screen(&vp, op) {
+                        let d = Vec2::new((n.x - on.x) * aspect, n.y - on.y).length();
+                        let need = (r_me + ohw * focal / ow) * 1.1;
+                        if d < need {
+                            ok = false;
+                            break;
+                        }
+                        min_sep = min_sep.min(d - need);
+                    }
+                }
+                if !ok {
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            valid += 1;
+            let x_mean = xs / sample_frac.len() as f32;
+            let score = min_sep.min(0.6) - (x_mean - lane).abs();
             if best.as_ref().map_or(true, |b| score > b.0) {
                 best = Some((score, t));
             }
         }
         match best {
-            Some((score, t)) if score >= 3 => {
+            Some((_, t)) => {
+                self.lane += 1;
                 self.spawn_sound(t.kind, t.home);
                 self.targets.push(t);
                 self.spawn_stats.0 += 1;
+                true
             }
-            _ => self.spawn_stats.1 += 1,
+            None => {
+                self.spawn_stats.1 += 1;
+                false
+            }
         }
     }
 
-    fn candidate(&self, kind: Kind, rng: &mut Rng, side_sign: f32, near: Option<Vec3>) -> Option<Target> {
+    /// Builds a candidate target. The spot is chosen on screen first (at screen x
+    /// `lane_x`, as seen by the camera a little after the target appears) and then
+    /// projected into the world, so targets land where players can see them.
+    fn candidate(&self, kind: Kind, rng: &mut Rng, lane_x: f32, near: Option<Vec3>) -> Option<Target> {
         let life = match kind {
             Kind::Skeleton => rng.range(3.6, 4.6),
             Kind::Bat => rng.range(3.4, 4.4),
             Kind::Candy => 2.8,
             _ => rng.range(4.4, 5.8),
         };
-        let lead = match kind {
-            Kind::Bat => rng.range(3.5, 7.0),
-            Kind::Candy => rng.range(3.0, 6.0),
-            _ => rng.range(2.4, 6.5),
-        };
-        let d = if near.is_some() {
-            self.track.stop_dist
-        } else if self.ride_t + lead > RIDE_SECONDS - 0.5 {
-            self.track.stop_dist + rng.range(6.0, 14.0)
+        let anchor = life * 0.5;
+        let (eye, right, up, _) = self.view_ahead(anchor);
+        let dir = up.cross(right).normalize_or_zero();
+        let aspect = self.screen.x / self.screen.y.max(1.0);
+        let focal = 1.0 / 35f32.to_radians().tan();
+        let depth = if near.is_some() { rng.range(9.0, 15.0) } else { rng.range(6.5, 15.0) };
+        let sx = (lane_x + rng.range(-0.12, 0.12)).clamp(-0.78, 0.78);
+        let sy = rng.range(-0.25, 0.5);
+        let mut base = eye + dir * depth + right * (sx * depth * aspect / focal) + up * (sy * depth / focal);
+        // Track frame alongside the spot (for floor height and "is it over the rails?").
+        let cam_d = if self.state == State::Ride && self.ride_t + anchor < RIDE_SECONDS {
+            self.track.dist_at_time(self.ride_t + anchor)
         } else {
-            self.track.dist_at_time(self.ride_t + lead)
+            self.track.stop_dist
         };
-        let f = self.track.frame_at(d);
-        let right = Vec3::new(f.right.x, 0.0, f.right.z).normalize_or_zero();
-        let fwd = Vec3::new(f.fwd.x, 0.0, f.fwd.z).normalize_or_zero();
-        let side = side_sign * rng.range(0.3, 4.2);
-        let fo = rng.range(-0.5, 3.0);
-        let mut base = f.pos + right * side + fwd * fo;
+        let f = self.track.frame_at(cam_d + depth);
+        let tright = Vec3::new(f.right.x, 0.0, f.right.z).normalize_or_zero();
+        let tfwd = Vec3::new(f.fwd.x, 0.0, f.fwd.z).normalize_or_zero();
         let ty = f.pos.y;
-        if let Some(c) = near {
-            base = c + Vec3::new(rng.range(-8.0, 8.0), rng.range(-4.0, 1.5), rng.range(-7.0, -3.0));
-        }
-        let floor = self.floor_below(base + Vec3::Y * 2.5);
+        let side = (base - f.pos).dot(tright);
+        let over_track = side.abs() < 1.6 && near.is_none();
+        let floor = self.floor_below(base + Vec3::Y * 1.0);
         let mut t = Target {
             kind,
             home: base,
@@ -581,45 +701,52 @@ impl Game {
             scale: 0.0,
             dead: false,
         };
-        let over_track = side.abs() < 1.5 && near.is_none();
         match kind {
             Kind::Pumpkin | Kind::Skeleton => {
-                if near.is_some() {
-                    t.home.y = base.y;
-                } else {
+                if near.is_none() {
                     if floor < ty - 1.2 || floor > ty + 1.5 || over_track {
                         return None;
                     }
-                    t.home.y = floor + if kind == Kind::Pumpkin { 0.56 } else { 0.95 };
+                    base.y = floor + if kind == Kind::Pumpkin { 0.56 } else { 0.95 };
                 }
+                t.home = base;
             }
             Kind::Ghost | Kind::Book => {
-                let lo = if over_track { 2.8 } else { 1.0 };
-                t.home.y = if near.is_some() { base.y } else { ty + rng.range(lo, 3.6) };
+                if near.is_none() {
+                    let lo = ty + if over_track { 2.9 } else { 1.4 };
+                    base.y = base.y.clamp(lo, ty + 4.8).max(floor + 1.4);
+                }
+                t.home = base;
             }
             Kind::Spider => {
-                let hang = ty + rng.range(if over_track { 2.8 } else { 1.3 }, 3.4);
-                t.home.y = hang;
-                let ceil = self.ceiling_above(Vec3::new(base.x, hang, base.z)).unwrap_or(hang + 6.0);
+                if near.is_none() {
+                    let lo = ty + if over_track { 2.9 } else { 1.3 };
+                    base.y = base.y.clamp(lo, ty + 4.0);
+                }
+                t.home = base;
+                let ceil = self.ceiling_above(base).unwrap_or(base.y + 6.0);
+                if ceil - base.y > 12.0 {
+                    return None; // nothing to hang from
+                }
                 t.a = Vec3::new(base.x, ceil, base.z);
             }
             Kind::Bat | Kind::Candy => {
-                let y = if near.is_some() { base.y } else { ty + rng.range(if kind == Kind::Bat { 2.0 } else { 1.5 }, 3.8) };
-                let span = rng.range(3.0, 5.0);
-                let s = side_sign;
-                let mid = Vec3::new(base.x, y, base.z) - right * side * 0.6;
-                t.a = mid + right * (s * span);
-                t.b = mid - right * (s * span) + fwd * rng.range(-1.0, 1.0) + Vec3::Y * rng.range(-0.6, 0.8);
-                t.home = mid;
-                if self.world.solid_at(t.a) || self.world.solid_at(t.b) {
-                    return None;
+                if near.is_none() {
+                    base.y = base.y.clamp(ty + 1.8, ty + 4.8);
                 }
+                let span = rng.range(2.0, 3.5);
+                let s = if rng.chance(0.5) { 1.0 } else { -1.0 };
+                let (r, fw) = if near.is_some() { (right, dir) } else { (tright, tfwd) };
+                t.home = base;
+                t.a = base + r * (s * span);
+                t.b = base - r * (s * span) + fw * rng.range(-1.0, 1.0) + Vec3::Y * rng.range(-0.6, 0.8);
             }
         }
-        // Must float in open air, above the floor.
-        for age in [0.0, t.life * 0.5, t.life] {
-            let p = Self::motion(&t, age);
-            if self.world.solid_at(p) || self.world.solid_at(p + Vec3::Y * 0.5) || self.world.solid_at(p - Vec3::Y * 0.4) {
+        // Must stay in open air for its whole life (finer steps for flyers).
+        let steps = if matches!(kind, Kind::Bat | Kind::Candy) { 10 } else { 6 };
+        for i in 0..=steps {
+            let p = Self::motion(&t, t.life * i as f32 / steps as f32);
+            if !self.body_clear(kind, p) {
                 return None;
             }
         }
@@ -734,8 +861,18 @@ impl Game {
                 while self.next_spawn < self.spawns.len() && self.spawns[self.next_spawn].t <= self.ride_t {
                     let s = &self.spawns[self.next_spawn];
                     let (k, seed, side) = (s.kind, s.seed, s.side);
-                    self.spawn_target(k, seed, side, None);
+                    if !self.spawn_target(k, seed, side, None) {
+                        self.retries.push((self.ride_t + 0.35, k, seed.wrapping_add(1), 3));
+                    }
                     self.next_spawn += 1;
+                }
+                // A spawn that found no good spot tries again a moment later.
+                let due: Vec<_> = self.retries.iter().copied().filter(|r| r.0 <= self.ride_t).collect();
+                self.retries.retain(|r| r.0 > self.ride_t);
+                for (_, k, seed, left) in due {
+                    if !self.spawn_target(k, seed, 1.0, None) && left > 1 && self.ride_t < RIDE_SECONDS - 3.0 {
+                        self.retries.push((self.ride_t + 0.35, k, seed.wrapping_add(7), left - 1));
+                    }
                 }
                 if self.ride_t >= RIDE_SECONDS {
                     self.ride_t = RIDE_SECONDS;
@@ -763,13 +900,22 @@ impl Game {
             }
             State::Boss => self.update_boss(dt),
             State::Victory => {
-                if self.state_t > 3.8 {
+                // The king vanishes, then the grand doors behind him swing open.
+                let before = self.state_t - dt;
+                if before < DOOR_START && self.state_t >= DOOR_START {
+                    self.sfx(Sfx::Rumble, 0.9, 0.0, 0.8);
+                    self.shake = 0.4;
+                }
+                self.door_open = smooth((self.state_t - DOOR_START) / DOOR_TIME);
+                if self.state_t > DOOR_START + DOOR_TIME + 0.3 {
                     self.state = State::Outro;
                     self.state_t = 0.0;
                 }
             }
             State::Outro => {
-                if self.state_t > 4.5 {
+                // The cart rolls out through the open doors, then on to the scores.
+                self.door_open = 1.0;
+                if self.state_t > OUTRO_TIME {
                     self.state = State::Results;
                     self.state_t = 0.0;
                 }
@@ -788,6 +934,17 @@ impl Game {
                     self.state = State::Title;
                     self.state_t = 0.0;
                     self.title_join_t = None;
+                    // Back on the title screen every rider has to press A again to join.
+                    for p in self.players.iter_mut() {
+                        if matches!(p.source, Some(SourceId::Bot(_))) {
+                            continue;
+                        }
+                        p.joined = false;
+                        p.aim_visible = false;
+                        if matches!(p.source, Some(SourceId::Wii(_))) {
+                            p.source = None;
+                        }
+                    }
                 }
             }
         }
@@ -964,9 +1121,9 @@ impl Game {
             State::Boss | State::Victory => (self.track.stop_dist, 0.0),
             State::Outro => {
                 let t = self.state_t;
-                (self.track.stop_dist + 0.9 * t * t, 1.8 * t)
+                (self.track.stop_dist + OUTRO_ACCEL * t * t, 2.0 * OUTRO_ACCEL * t)
             }
-            State::Results => (self.track.stop_dist + 20.0, 0.0),
+            State::Results => (self.track.stop_dist + OUTRO_ACCEL * OUTRO_TIME * OUTRO_TIME, 0.0),
         };
         let f = self.track.frame_at(d);
         let (mut eye, mut dir, mut up) = self.pose_at(d, speed);
@@ -976,9 +1133,20 @@ impl Game {
             eye = f.pos + Vec3::Y * 1.9;
             up = Vec3::Y;
         }
+        let door_centre = Vec3::new(0.0, DOOR_FLOOR + 6.5, DOOR_Z);
         if let (Some(b), true) = (&self.boss, matches!(self.state, State::Boss | State::Victory)) {
             let to = (b.pos - eye).normalize_or_zero();
-            dir = dir.lerp(to, 0.3).normalize();
+            let boss_look = dir.lerp(to, 0.3).normalize();
+            // Once the king is gone, turn to face the doors.
+            let k = if self.state == State::Victory { smooth((self.state_t - 1.0) / 1.5) } else { 0.0 };
+            let door_look = (door_centre - eye).normalize_or_zero();
+            dir = boss_look.lerp(door_look, k).normalize();
+        }
+        if self.state == State::Outro {
+            let door_look = (door_centre - eye).normalize_or_zero();
+            if door_look.dot(dir) > 0.0 && eye.z < door_centre.z - 2.0 {
+                dir = door_look.lerp(dir, smooth(self.state_t / 1.5)).normalize();
+            }
         }
         self.cam_dir = dir;
         self.cam_up = up;
@@ -999,9 +1167,8 @@ impl Game {
         if z != self.zone && self.state == State::Ride {
             self.zone = z;
             self.banner = (zone_name(z).into(), 0.0);
-            if z == Zone::Drop {
-                self.sfx(Sfx::Wheee, 0.6, 0.0, 1.0);
-            } else {
+            // (No sound on the drop into the crypt.)
+            if z != Zone::Drop {
                 self.sfx(Sfx::Whoosh, 0.5, 0.0, 1.0);
             }
         }
@@ -1289,6 +1456,11 @@ impl Game {
 
     // ================================================================= rendering
 
+    /// The doors only need drawing once the ride is underground near the lair.
+    fn camera_near_lair(&self) -> bool {
+        self.cam.z > 150.0 && self.cam.y < -5.0
+    }
+
     pub fn frame(&self) -> FrameOut {
         FrameOut { viewproj: self.viewproj, cam: self.cam, fog: self.fog, fog_range: self.fog_range, lamp: self.lamp }
     }
@@ -1299,26 +1471,18 @@ impl Game {
 
     pub fn draw_world(&self, out: &mut Vec<Vertex>) {
         let m = &self.models;
-        // The riders' cart, fixed to the camera so it always frames the bottom of the screen.
-        if !matches!(self.state, State::Results) {
-            let dir = self.cam_dir;
-            let right = dir.cross(self.cam_up).normalize_or_zero();
-            let up = right.cross(dir).normalize_or_zero();
-            let basis = Mat4::from_cols(right.extend(0.0), up.extend(0.0), dir.extend(0.0), Vec3::ZERO.extend(1.0));
-            let origin = self.cam - up * 1.55 + dir * 0.35;
-            let cart_m = Mat4::from_translation(origin) * basis;
-            let light = self.world.light_at(self.cam).max(Vec3::splat(0.3));
-            m.cart.draw(out, &cart_m, light, 0.0, None);
-            // A little dashboard lamp for each player, lit in their colour once they join.
-            for (i, p) in self.players.iter().enumerate() {
-                let c = PLAYER_COLORS[i];
-                let lit = p.joined;
-                let col = if lit { c } else { [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25] };
-                let pulse = if lit && p.kick > 0.0 { 1.0 + p.kick * 0.4 } else { 1.0 };
-                let pos = origin + right * ((i as f32 - 1.5) * 0.42) + up * 1.12 + dir * 0.86;
-                let lm = Mat4::from_translation(pos) * basis * Mat4::from_scale(Vec3::splat(0.12 * pulse));
-                push_box(out, &lm, T_WHITE, col, light, if lit { 1.0 } else { 0.3 });
-            }
+        // The grand doors behind the Pumpkin King (each leaf swings into the hall).
+        if self.camera_near_lair() {
+            let swing = self.door_open * 1.75;
+            let light = self.world.light_at(Vec3::new(0.0, DOOR_FLOOR + 3.0, DOOR_Z - 1.5)).max(Vec3::splat(0.35));
+            let left = Mat4::from_translation(Vec3::new(-DOOR_HALF, DOOR_FLOOR, DOOR_Z))
+                * Mat4::from_rotation_y(-swing)
+                * Mat4::from_translation(Vec3::new(DOOR_HALF * 0.5, 0.0, 0.0));
+            let right = Mat4::from_translation(Vec3::new(DOOR_HALF, DOOR_FLOOR, DOOR_Z))
+                * Mat4::from_rotation_y(swing)
+                * Mat4::from_translation(Vec3::new(-DOOR_HALF * 0.5, 0.0, 0.0));
+            m.door[0].draw(out, &left, light, 0.0, None);
+            m.door[1].draw(out, &right, light, 0.0, None);
         }
 
         for t in &self.targets {
@@ -1406,9 +1570,12 @@ impl Game {
                     let open = 0.35 + 0.9 * (0.5 + 0.5 * (a * 10.0 + t.phase).sin());
                     let flight = base * Mat4::from_rotation_x(0.4);
                     let half = &m.book_half[t.variant % 3];
-                    let r = flight * Mat4::from_rotation_z(open) * Mat4::from_translation(Vec3::new(0.25, 0.0, 0.0));
+                    // Each half hinges on the spine at the page surface, so the pages of one
+                    // half can never poke through the cover of the other.
+                    let hinge = Mat4::from_translation(Vec3::new(0.25, -0.2, 0.0));
+                    let r = flight * Mat4::from_rotation_z(open) * hinge;
                     half.draw(out, &r, light, hl, None);
-                    let l = flight * Mat4::from_rotation_y(std::f32::consts::PI) * Mat4::from_rotation_z(open) * Mat4::from_translation(Vec3::new(0.25, 0.0, 0.0));
+                    let l = flight * Mat4::from_rotation_y(std::f32::consts::PI) * Mat4::from_rotation_z(open) * hinge;
                     half.draw(out, &l, light, hl, None);
                 }
             }
@@ -1503,14 +1670,16 @@ impl Game {
                 if !b.defeated && self.state == State::Boss {
                     let bw = w * 0.5;
                     let x = w * 0.25;
-                    let y = 12.0 * unit;
-                    ui.text("THE PUMPKIN KING", w * 0.5, y - 9.0 * unit, 1.4, orange, Align::Center);
+                    // Name on top, bar underneath with a clear gap.
+                    let name_y = 4.0 * unit;
+                    let y = name_y + 8.0 * 1.4 * unit + 3.0 * unit;
+                    ui.text("THE PUMPKIN KING", w * 0.5, name_y, 1.4, orange, Align::Center);
                     ui.panel(x, y, bw, 7.0 * unit, [0.1, 0.03, 0.12, 0.85], [0.0, 0.0, 0.0, 0.9]);
                     let f = (b.hp / b.max_hp).max(0.0);
                     ui.rect(x + unit * 1.5, y + unit * 1.5, (bw - unit * 3.0) * f, 4.0 * unit, [1.0, 0.45 + 0.3 * f, 0.05, 1.0]);
                     if b.taunt > 3.5 && b.t > 3.0 {
                         if let Some((sp, _)) = self.project(b.pos + Vec3::Y * 5.5) {
-                            let ty = sp.y.max(y + 14.0 * unit);
+                            let ty = sp.y.max(y + 13.0 * unit);
                             ui.text_fit(b.taunt_text, sp.x.clamp(w * 0.3, w * 0.7), ty, 1.6, w * 0.6, [1.0, 0.9, 0.4, 1.0], Align::Center);
                         }
                     }
@@ -1521,7 +1690,7 @@ impl Game {
 
         // Fade to black at the end of the ride.
         if self.state == State::Outro {
-            let a = smooth((self.state_t - 1.5) / 2.5);
+            let a = smooth((self.state_t - (OUTRO_TIME - 1.6)) / 1.4);
             ui.rect(0.0, 0.0, w, h, [0.0, 0.0, 0.0, a]);
         }
 
@@ -1700,5 +1869,44 @@ impl Game {
             }
         }
         AWARDS[best]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wii(id: u32, a: bool) -> SourceInput {
+        SourceInput {
+            id: SourceId::Wii(id),
+            aim: Some(Vec2::new(640.0, 360.0)),
+            fire: false,
+            fire_pressed: false,
+            join: a,
+            start: false,
+            pause: false,
+            quit_to_title: false,
+        }
+    }
+
+    #[test]
+    fn players_must_rejoin_after_the_results_screen() {
+        let track = Track::new();
+        let world = crate::world::generate(&track);
+        let mut g = Game::new(track, world, false, 0);
+        let screen = Vec2::new(1280.0, 720.0);
+        // Two remotes join on the title screen.
+        g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
+        assert_eq!(g.joined_count(), 2);
+        // Skip to the results and press A to leave them.
+        g.state = State::Results;
+        g.state_t = 10.0;
+        g.update(0.016, &[wii(0, true), wii(1, false)], screen, None);
+        assert_eq!(g.state, State::Title);
+        assert_eq!(g.joined_count(), 0, "nobody should still be joined");
+        // Pressing A again joins a player afresh.
+        g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
+        g.update(0.016, &[wii(0, false), wii(1, true)], screen, None);
+        assert_eq!(g.joined_count(), 1);
     }
 }

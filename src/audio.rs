@@ -25,14 +25,13 @@ pub enum Sfx {
     Go,
     Join,
     Whoosh,
-    Wheee,
     Bonk,
     Laugh,
     Rumble,
     Boom,
     Ding,
 }
-const SFX_COUNT: usize = 20;
+const SFX_COUNT: usize = 19;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Music {
@@ -55,7 +54,6 @@ enum Cmd {
     Play(SoundEvent),
     Music(Option<Music>),
     Cart(f32),
-    Volume(f32),
 }
 
 pub struct Bank {
@@ -85,7 +83,6 @@ impl Bank {
             synth::sfx_beep(true),
             synth::sfx_join(),
             synth::sfx_whoosh(),
-            synth::sfx_wheee(),
             synth::sfx_bonk(),
             synth::sfx_laugh(),
             synth::sfx_rumble(),
@@ -129,7 +126,7 @@ impl Bank {
         }
         let names = [
             "pop", "shot", "bonus", "poof", "ghost", "squeak", "rattle", "zip", "boing", "flutter", "beep", "go", "join",
-            "whoosh", "wheee", "bonk", "laugh", "rumble", "boom", "ding",
+            "whoosh", "bonk", "laugh", "rumble", "boom", "ding",
         ];
         for (i, b) in self.sfx.iter().enumerate() {
             synth::write_wav(&format!("{dir}/sfx_{}.wav", names[i]), b)?;
@@ -192,7 +189,6 @@ impl Mixer {
                 }
             }
             Cmd::Cart(v) => self.cart_target = v.clamp(0.0, 1.0),
-            Cmd::Volume(v) => self.master = v,
         }
     }
 
@@ -325,11 +321,6 @@ impl Audio {
     pub fn cart(&self, v: f32) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(Cmd::Cart(v));
-        }
-    }
-    pub fn volume(&self, v: f32) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Cmd::Volume(v));
         }
     }
 }
