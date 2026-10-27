@@ -2001,18 +2001,20 @@ impl Game {
         let (rw, rh) = (100.0 * u, 16.0 * u);
         let rx = w * 0.5 - rw * 0.6;
         let top = h * 0.05;
-        let ry = top + 32.0 * unit;
-        let hint_y = ry + rh + 20.0 * u;
+        let ry = top + 28.0 * unit + 16.0 * u; // room for the heading and the A badge above the remote
+        let hint_y = ry + rh + 17.0 * u;
         let panel_h = hint_y + 26.0 * unit - top;
         ui.rect(0.0, top, w, panel_h, [0.02, 0.0, 0.04, 0.85]);
         ui.rect(0.0, top, w, unit, [1.0, 0.6, 0.1, 0.6]);
         ui.rect(0.0, top + panel_h - unit, w, unit, [1.0, 0.6, 0.1, 0.6]);
-        let head = if self.debug { "CLICK TO SHOOT!" } else { "PULL THE B TRIGGER TO SHOOT!" };
+        let head = if self.debug { "CLICK TO SHOOT!" } else { "PRESS A OR PULL B TO SHOOT!" };
         ui.text_fit(head, w * 0.5, top + 7.0 * unit, 2.2, w * 0.9, orange, Align::Center);
 
-        // A Wii Remote side on, pointing right at the screen, squeezing B once a second.
+        // A Wii Remote side on, pointing right at the screen, pressing A and B once a second.
         let since = t.fract();
         let squeeze = since < 0.18;
+        let glow = 0.75 + 0.25 * (t * 8.0).sin();
+        let lit = [1.0, 0.55 * glow, 0.1, 1.0];
         let outline = [0.22, 0.22, 0.27, 1.0];
         let shade = |k: f32| [0.97 * k, 0.97 * k, 0.99 * k, 1.0];
         // Wrist strap hanging from the back end (behind the body).
@@ -2035,11 +2037,18 @@ impl Game {
             ui.round_rect(bx - u * 0.5, ry - 1.8 * u, 4.0 * u, 2.8 * u, u, outline);
             ui.rect(bx, ry - 1.3 * u, 3.0 * u, 1.3 * u, c);
         }
+        // The A button glows like the trigger and sinks in on each press.
         let ax = rx + 66.0 * u;
-        ui.round_rect(ax - 0.5 * u, ry - 3.5 * u, 9.0 * u, 4.5 * u, 2.0 * u, outline);
-        ui.round_rect(ax + 0.5 * u, ry - 2.7 * u, 7.0 * u, 3.0 * u, 1.5 * u, shade(0.86));
-        ui.rect(ax + 1.5 * u, ry - 2.3 * u, 3.0 * u, 0.8 * u, shade(1.0));
-        ui.text("A", ax + 4.0 * u, ry - 3.5 * u - 10.0 * unit, 1.0, [0.8, 0.8, 0.85, 1.0], Align::Center);
+        let sink = if squeeze { 1.5 * u } else { 0.0 };
+        ui.round_rect(ax - 0.5 * u, ry - 3.5 * u + sink, 9.0 * u, 4.5 * u - sink, 2.0 * u, outline);
+        ui.round_rect(ax + 0.5 * u, ry - 2.7 * u + sink, 7.0 * u, 3.0 * u - sink, 1.5 * u, lit);
+        ui.rect(ax + 1.5 * u, ry - 2.3 * u + sink, 3.0 * u, 0.8 * u, [1.0, 0.85, 0.5, 1.0]);
+        let (alx, aly) = (ax + 4.0 * u, ry - 3.5 * u - 12.0 * u);
+        ui.round_rect(alx - 4.5 * u, aly - 0.5 * u, 9.0 * u, 9.0 * u, 2.5 * u, [0.0, 0.0, 0.0, 1.0]);
+        ui.round_rect(alx - 4.0 * u, aly, 8.0 * u, 8.0 * u, 2.0 * u, [1.0, 0.6 * glow + 0.1, 0.1, 1.0]);
+        let abs = 8.0 * u / (8.0 * unit) * 0.8;
+        ui.text("A", alx, aly + 4.0 * u - 4.0 * abs * unit, abs, white, Align::Center);
+        ui.rect(alx - 0.5 * u, aly + 8.5 * u, u, 2.5 * u, orange);
         let dx = rx + 80.0 * u;
         ui.round_rect(dx - 0.5 * u, ry - 3.0 * u, 10.0 * u, 4.0 * u, u, outline);
         ui.rect(dx + 0.5 * u, ry - 2.2 * u, 8.0 * u, 2.4 * u, [0.32, 0.32, 0.38, 1.0]);
@@ -2063,7 +2072,6 @@ impl Game {
         }
 
         // The B trigger sits in a recess underneath, below the D-pad, and glows.
-        let glow = 0.75 + 0.25 * (t * 8.0).sin();
         let drop = if squeeze { 1.5 } else { 5.0 } * u;
         let bx = rx + 78.0 * u;
         let by = ry + rh;
@@ -2090,7 +2098,7 @@ impl Game {
         if star > 0.0 {
             ui.sprite(T_STAR, bx0 + 36.0 * u, beam_y, 12.0 * u * star, [1.0, 0.85, 0.3, 1.0 - since / 0.3]);
         }
-        let hint = if self.debug { "AIM WITH THE MOUSE - HOLD TO RAPID FIRE" } else { "POINT AT THE SCREEN - HOLD B TO RAPID FIRE" };
+        let hint = if self.debug { "AIM WITH THE MOUSE - HOLD TO RAPID FIRE" } else { "POINT AT THE SCREEN - HOLD A OR B TO RAPID FIRE" };
         ui.text_fit(hint, w * 0.5, hint_y, 1.0, w * 0.9, [0.9, 0.9, 1.0, 1.0], Align::Center);
         ui.text_fit("EVERYONE SHOOT YOUR TARGET TO START THE RIDE!", w * 0.5, hint_y + 11.0 * unit, 1.2, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
 
