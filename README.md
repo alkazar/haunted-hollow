@@ -210,3 +210,7 @@ Other handy flags: `--bots N` (computer players, an attract/demo mode), `--boss`
 
 Tuning knobs: spawn pools and density in `Game::build_schedule`, points/hit sizes in `Kind`,
 boss health in `update` (`40 + 22 × players`), track shape and section speeds in `track.rs`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
