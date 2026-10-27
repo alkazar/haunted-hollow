@@ -1,5 +1,9 @@
 # Haunted Hollow 🎃
 
+> **Note:** This game was made with the help of [Claude Opus 5.5](https://www.anthropic.com/claude),
+> an AI model by Anthropic, working in Claude Code. The code, world, models, textures, music and
+> sound effects were all written with Claude, under human direction.
+
 A Halloween on-rails shooter for **1–4 players with Wii Remotes**, made for young kids and up.
 Everyone rides a roller-coaster cart through a blocky haunted-house attraction — graveyard,
 grand foyer, haunted library, dining hall, a big drop into the crypt — and pops ghosts, bats,
