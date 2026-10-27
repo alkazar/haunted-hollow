@@ -979,15 +979,15 @@ fn house(w: &mut World, rng: &mut Rng) {
             }
         }
     }
-    // Porch.
-    w.fill(-6, 6, 8, 8, 34, 38, b::ROOF);
-    for &x in &[-6, 6] {
+    // Porch (wide enough that the ride's tunnel, which swings in from x = 5, misses the
+    // pillars and lanterns).
+    w.fill(-8, 8, 8, 8, 34, 38, b::ROOF);
+    for &x in &[-8, 8] {
         w.fill(x, x, 1, 7, 34, 34, b::LOG);
+        let lx = x - x.signum();
+        w.fill(lx, lx, 6, 7, 36, 36, b::FENCE);
+        w.set(lx, 5, 36, b::LANTERN);
     }
-    w.fill(-5, -5, 6, 7, 36, 36, b::FENCE);
-    w.set(-5, 5, 36, b::LANTERN);
-    w.fill(5, 5, 6, 7, 36, 36, b::FENCE);
-    w.set(5, 5, 36, b::LANTERN);
 
     // ---------------- Foyer
     w.fill(-3, 3, 0, 0, 41, 69, b::CARPET);
@@ -1728,6 +1728,23 @@ fn decorate_walls(w: &mut World, rng: &mut Rng, path: &[Vec3], x0: i32, x1: i32,
                 };
                 u += if placed { 4 + rng.int(0, 1) } else { 1 };
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn porch_pillars_and_lanterns_survive_the_ride_tunnel() {
+        let track = Track::new();
+        let w = generate(&track);
+        for x in [-8, 8] {
+            for y in 1..=7 {
+                assert_eq!(w.get(x, y, 34), b::LOG, "porch pillar at x {x} is missing its block at y {y}");
+            }
+            assert_eq!(w.get(x - x.signum(), 5, 36), b::LANTERN, "porch lantern by x {x} was carved away");
         }
     }
 }
