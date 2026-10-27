@@ -121,7 +121,7 @@ fn props(id: u8) -> Props {
         b::WEB => Props { opaque: false, shape: Shape::Cross, ..cube(T_COBWEB) },
         b::WINDOW => Props { opaque: false, shape: Shape::Glass, ..cube(T_WINDOW) },
         b::WINDOW_LIT => Props { emit: [12, 8, 3], glow: true, ..cube(T_WINDOW_LIT) },
-        b::GRAVE => cube(T_GRAVE),
+        b::GRAVE => Props { tiles: [T_STONE, T_GRAVE, T_STONE], ..cube(0) },
         b::ROOF => cube(T_ROOF),
         b::CRYPT => cube(T_CRYPT),
         b::PURPLE => cube(T_PURPLE),
@@ -587,10 +587,12 @@ impl World {
             let light = self.light_at(mid + Vec3::Y * 0.5);
             for side in [-0.55f32, 0.55] {
                 let c = mid + right * side + up * 0.12;
+                // (right, up, -fwd) keeps the basis right-handed; with +fwd it was
+                // mirrored, which flipped the faces so their fronts were culled.
                 let m = Mat4::from_cols(
                     (right * 0.1).extend(0.0),
                     (up * 0.12).extend(0.0),
-                    (fwd * len).extend(0.0),
+                    (-fwd * len).extend(0.0),
                     c.extend(1.0),
                 );
                 push_box(out, &m, T_METAL, [0.9, 0.9, 1.0], light, 0.0);
@@ -602,7 +604,7 @@ impl World {
             let m = Mat4::from_cols(
                 (f.right * 1.5).extend(0.0),
                 (f.up * 0.08).extend(0.0),
-                (f.fwd * 0.28).extend(0.0),
+                (-f.fwd * 0.28).extend(0.0),
                 c.extend(1.0),
             );
             push_box(out, &m, T_DARKPLANK, [1.0; 3], light, 0.0);
@@ -709,8 +711,15 @@ pub fn generate(track: &Track) -> World {
     decorate_walls(&mut w, &mut rng, &path, -26, 26, -18, -1, 177, 214, b::PURPLE, &[5, 10]);
     carve(&mut w, track);
     after_carve(&mut w, track);
+    clear_rails(&mut w, track);
     w.compute_light();
     w
+}
+
+/// A pumpkin can go here: open air, and no other pumpkin right next to it (pumpkins
+/// side by side merge into one long-looking pumpkin).
+fn pumpkin_spot_free(w: &World, x: i32, y: i32, z: i32) -> bool {
+    w.is_air(x, y, z) && (-1..=1).all(|dx| (-1..=1).all(|dz| w.get(x + dx, y, z + dz) != b::PUMPKIN))
 }
 
 fn near_track(path: &[Vec3], x: f32, z: f32, r: f32) -> bool {
@@ -814,7 +823,7 @@ fn graveyard(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
         if rng.chance(0.3) {
             let t = nearest_on_path(path, x as f32, z as f32 + 1.0);
             let f = facing_toward(x as f32, z as f32 + 1.0, t.x, t.z);
-            if w.is_air(x, 1, z + 1) {
+            if pumpkin_spot_free(w, x, 1, z + 1) {
                 w.set_meta(x, 1, z + 1, b::PUMPKIN, f);
             }
         }
@@ -833,7 +842,7 @@ fn graveyard(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
         let side = if (d as i32 / 7) % 2 == 0 { 3.3 } else { -3.3 };
         let q = p + right * side;
         let (x, z) = (q.x.floor() as i32, q.z.floor() as i32);
-        if w.is_air(x, 1, z) {
+        if pumpkin_spot_free(w, x, 1, z) {
             w.set_meta(x, 1, z, b::PUMPKIN, facing_toward(q.x, q.z, p.x, p.z));
         }
         // Lamp posts.
@@ -1137,16 +1146,16 @@ fn crypt(w: &mut World, rng: &mut Rng) {
 fn lair(w: &mut World, rng: &mut Rng) {
     w.room(-26, 26, -18, -1, 177, 214, b::PURPLE, b::DIRT, b::PURPLE);
     w.fill(-25, 25, -18, -18, 178, 213, b::GRASS);
-    // Pumpkin patch.
-    for _ in 0..90 {
+    // Pumpkin patch (always with gaps between the pumpkins).
+    for _ in 0..140 {
         let x = rng.int(-24, 24);
         let z = rng.int(179, 212);
         if x.abs() < 4 && z < 196 {
             continue;
         }
-        if w.is_air(x, -17, z) {
+        if pumpkin_spot_free(w, x, -17, z) {
             w.set_meta(x, -17, z, b::PUMPKIN, if z < 196 { 5 } else { rng.int(0, 5) as u8 });
-            if rng.chance(0.3) && w.is_air(x + 1, -17, z) {
+            if rng.chance(0.3) && w.is_air(x + 1, -17, z) && pumpkin_spot_free(w, x + 2, -17, z) {
                 w.set(x + 1, -17, z, b::HAY);
             }
         }
@@ -1287,13 +1296,39 @@ fn after_carve(w: &mut World, track: &Track) {
     let mut side = 1.0;
     for f in track.samples(3.0) {
         if f.pos.z > 127.0 && f.pos.z < 141.0 {
+            // Walk out from the track until we reach a wall and mount the torch on it
+            // (no wall close by: no torch, rather than one floating in mid-air).
             let right = Vec3::new(f.right.x, 0.0, f.right.z).normalize_or_zero();
-            let p = f.pos + right * (2.4 * side) + Vec3::Y * 2.2;
-            let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-            if w.is_air(x, y, z) {
-                w.set(x, y, z, b::SOUL_TORCH);
+            let mut step = 2.0;
+            while step < 6.0 {
+                let p = f.pos + right * (step * side) + Vec3::Y * 2.2;
+                let next = p + right * (0.6 * side);
+                let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+                if w.solid_at(next) {
+                    let on_wall = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dz)| props(w.get(x + dx, y, z + dz)).opaque);
+                    if w.is_air(x, y, z) && on_wall {
+                        w.set(x, y, z, b::SOUL_TORCH);
+                    }
+                    break;
+                }
+                step += 0.5;
             }
             side = -side;
+        }
+    }
+}
+
+/// Last pass: nothing may poke up through the rails or sleepers anywhere on the ride
+/// (corners of blocks under steep sections, the tops of support posts...).
+fn clear_rails(w: &mut World, track: &Track) {
+    for f in track.samples(0.1) {
+        for side in [-0.65f32, -0.5, -0.25, 0.0, 0.25, 0.5, 0.65] {
+            for h in [0.06f32, 0.15, 0.24] {
+                let p = f.pos + f.right * side + f.up * h;
+                if w.occupied(p) {
+                    w.set(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32, b::AIR);
+                }
+            }
         }
     }
 }
@@ -1436,7 +1471,7 @@ fn decorate(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
     for _ in 0..40 {
         let x = rng.int(10, 21);
         let z = rng.int(-8, 4);
-        if !near_track(path, x as f32 + 0.5, z as f32 + 0.5, 3.2) && w.is_air(x, 1, z) {
+        if !near_track(path, x as f32 + 0.5, z as f32 + 0.5, 3.2) && pumpkin_spot_free(w, x, 1, z) {
             if rng.chance(0.75) {
                 w.set_meta(x, 1, z, b::PUMPKIN, rng.int(0, 5) as u8);
             } else {

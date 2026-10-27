@@ -335,9 +335,21 @@ pub fn build() -> Vec<u8> {
         }
     });
     p.tile(T_GRAVE, |x, y| {
-        let crack = (x == 5 && y > 3 && y < 9) || (x == 6 && y >= 9 && y < 12);
-        let rip = (y == 4 && (3..13).contains(&x)) || (y == 6 && (4..12).contains(&x));
-        let c = if crack || rip { hex(0x55555c) } else { mul(hex(0x9a9aa2), 0.85 + hash(x, y, 29) * 0.2) };
+        // Headstone face: bevelled edge, a small cross, and "RIP" carved underneath.
+        const RIP: [&str; 5] = ["###.###.###", "#.#..#..#.#", "##...#..###", "#.#..#..#..", "#.#.###.#.."];
+        let edge = x == 0 || x == 15 || y == 15 || y == 0;
+        let cross = (x == 7 || x == 8) && (2..=6).contains(&y) || y == 3 && (5..=10).contains(&x);
+        let text = (9..14).contains(&y) && (2..13).contains(&x) && RIP[(y - 9) as usize].as_bytes()[(x - 2) as usize] == b'#';
+        let moss = y >= 13 && hash(x, y, 30) > 0.6;
+        let c = if edge {
+            mul(hex(0x6e6e76), 0.9 + hash(x, y, 29) * 0.15)
+        } else if cross || text {
+            hex(0x4a4a52)
+        } else if moss {
+            mul(hex(0x5a7a40), 0.9 + hash(x, y, 31) * 0.2)
+        } else {
+            mul(hex(0x9a9aa2), 0.88 + hash(x, y, 29) * 0.16)
+        };
         (c, 1.0)
     });
     p.tile(T_METAL, |x, y| (mul(hex(0x8a8f98), 0.8 + hash(x, y / 4, 30) * 0.3), 1.0));
