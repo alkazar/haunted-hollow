@@ -77,62 +77,21 @@ cargo build --release
 
 ### Connecting Wii Remotes
 
-You need Bluetooth, the remotes, and an IR sensor bar. Step 1 is needed once per remote and
-step 2 once per computer.
+You need Bluetooth, the remotes, and an IR sensor bar. There's nothing to pair or install: the
+game finds and connects the remotes itself.
 
-**1. Pair each remote**
+**1. Connect each remote**
 
-```sh
-bluetoothctl
-[bluetooth]# power on
-[bluetooth]# pairable on
-[bluetooth]# scan on
-```
+With the game running, press **1** and **2** on the remote together. Its four LEDs blink while
+it's looking for the game; when it connects all four light up steadily and it gives a short
+buzz. Then press **A** to join, and only your player's LED stays lit. Connect up to four remotes this way, at any time (also mid-ride).
+Remotes don't stay paired: after the game quits (or a remote turns off), press 1+2 again.
 
-Press the red **SYNC** button under the battery cover (the LEDs start blinking). When it shows
-up as `Nintendo RVL-CNT-01` (or `Nintendo RVL-CNT-01-TR` for newer remotes), pair it using its
-address:
+The game talks to the remotes directly over Bluetooth, so the `hid-wiimote` kernel driver,
+udev rules and controller remappers like InputPlumber don't get involved. It only needs
+BlueZ running and the adapter powered on (`bluetoothctl power on`).
 
-```
-[bluetooth]# pair XX:XX:XX:XX:XX:XX
-[bluetooth]# trust XX:XX:XX:XX:XX:XX
-[bluetooth]# connect XX:XX:XX:XX:XX:XX
-[bluetooth]# scan off
-```
-
-If pairing fails, try again and press SYNC just before `pair`. Once a remote is trusted,
-pressing any button on it reconnects it. `bluetoothctl devices Connected` lists what's
-connected.
-
-**2. Let the game read the remotes (udev rule)**
-
-The game reads remotes through the kernel's `hid-wiimote` driver (in every mainstream kernel),
-which turns each remote into several input devices (`/dev/input/event*`) that normally only
-root can open. Install a udev rule that gives the logged-in user access:
-
-```sh
-sudo tee /etc/udev/rules.d/70-wiimote.rules <<'EOF'
-SUBSYSTEM=="input", ATTRS{name}=="Nintendo Wii Remote*", TAG+="uaccess", MODE="0660"
-SUBSYSTEM=="leds", KERNEL=="*:blue:p*", RUN+="/bin/chmod a+w /sys%p/brightness"
-EOF
-sudo udevadm control --reload && sudo udevadm trigger
-```
-
-The first rule is the important one; the second is optional and lets the game light each
-remote's player LED. Then turn the remote off (hold its power button) and reconnect it so the
-rule applies.
-
-(Alternatively, add yourself to the `input` group with `sudo usermod -aG input $USER` and log
-out and back in. That works too, but gives access to every input device, keyboards included.)
-
-To check it worked, with a remote connected:
-
-```sh
-grep -A5 "Wii Remote" /proc/bus/input/devices   # "Nintendo Wii Remote", "... IR", etc.
-ls -l /dev/input/event*                          # the remote's devices: crw-rw----+
-```
-
-**3. Set up the sensor bar**
+**2. Set up the sensor bar**
 
 The remote aims by seeing two IR lights, so you need a **sensor bar**: a Wii console's bar (the
 Wii must be switched on), or any USB- or battery-powered one. Put it centred above or below the
@@ -140,21 +99,14 @@ screen. Without it the buttons still work, but there's no crosshair.
 
 **Troubleshooting**
 
-* **Run with `--debug` and press F3.** The overlay shows how many remotes the game sees and the
-  raw IR dots each one picks up. No remotes listed means a pairing or permissions problem;
-  remotes but no dots means the remote can't see the sensor bar.
-* **The remote's devices show `c---------` (mode 0000) even with the rule installed.** Another
-  program is hiding the remote so that only it can read it. **InputPlumber** (a controller
-  remapper on some gaming-focused distros) does this, and its rules are in
-  `/run/udev/rules.d/50-inputplumber-hide-*.rules`. Stop it, clear its rules, then reconnect
-  the remote:
-  ```sh
-  sudo systemctl stop inputplumber
-  sudo rm /run/udev/rules.d/50-inputplumber-hide-*.rules
-  sudo udevadm control --reload
-  ```
-  If you don't need InputPlumber, `sudo systemctl mask --now inputplumber` stops it from coming
-  back (undo with `sudo systemctl unmask inputplumber`).
+* **Run with `--debug` and press F3.** The overlay shows how many remotes the game sees, how
+  many reports per second each one sends and the raw IR dots it picks up. The terminal logs
+  each remote connecting and disconnecting (`[wiimote] ...`). Remotes but no dots means the
+  remote can't see the sensor bar.
+* **A remote never connects.** If it was paired before (e.g. with `bluetoothctl`), BlueZ
+  hands it to the kernel driver instead of the game, and the game logs
+  `... is paired with BlueZ`. Unpair it once with `bluetoothctl remove XX:XX:XX:XX:XX:XX`.
+  Also check that no other program (Dolphin, say) is connecting remotes at the same time.
 * **The crosshair moves the wrong way or doesn't reach the edges.** See the pointer calibration
   flags below.
 
@@ -216,7 +168,7 @@ Other handy flags: `--bots N` (computer players, an attract/demo mode), `--boss`
 | `src/game.rs` | Spawning, behaviours, hit testing, scoring, boss, title/results screens |
 | `src/synth.rs` | Tiny synthesizer: instruments, drums, the songs and every sound effect |
 | `src/audio.rs` | Real-time mixer thread, crossfading music, ALSA output via dlopen |
-| `src/wiimote.rs` | evdev Wii Remote reader: buttons, IR pointer, rumble, LEDs, hot-plug |
+| `src/wiimote.rs` | Wii Remotes over Bluetooth L2CAP: BlueZ discovery, IR camera setup, buttons, IR pointer, rumble, LEDs |
 | `src/highscores.rs` | The top-ten table and its save file |
 | `src/main.rs` | Window, input, game loop, command-line flags |
 

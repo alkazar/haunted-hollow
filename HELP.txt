@@ -27,5 +27,6 @@ Testing:
   --shot-dir DIR       Where to save screenshots
   --exit-after S       Quit after S seconds of simulation time
 
+Wii Remotes: press 1+2 together to connect one (no pairing needed).
 Wii Remote buttons:  B (trigger) or A = shoot / join,  + = start,
                      HOME = pause,  - (while paused) = back to the title screen

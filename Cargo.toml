@@ -7,12 +7,14 @@ license = "MIT"
 [dependencies]
 ash = "0.38"
 ash-window = "0.13"
-evdev = "0.12"
 font8x8 = "0.3"
 glam = "0.29"
+libc = "0.2"
 libloading = "0.8"
 raw-window-handle = "0.6"
 winit = "0.30"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 [build-dependencies]
 naga = { version = "25", features = ["wgsl-in", "spv-out"] }
+

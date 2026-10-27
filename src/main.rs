@@ -151,7 +151,7 @@ impl App {
                 pause: r.pressed & B_HOME != 0,
                 quit_to_title: r.pressed & B_MINUS != 0,
             });
-            dbg.push(format!("  #{} IR {:?}", r.id, r.raw_dots));
+            dbg.push(format!("  #{} {}HZ IR {:?}", r.id, r.report_rate, r.raw_dots));
         }
         self.game.debug_lines = dbg;
 

@@ -306,7 +306,8 @@ pub struct Game {
     /// When (in `state_t`) each player popped their practice target.
     practice: [Option<f32>; 4],
     pub rumble_requests: Vec<(SourceId, u32)>,
-    pub led_requests: Vec<(SourceId, usize)>,
+    /// Player LED per remote: Some(slot), or None for "no player" (all LEDs lit).
+    pub led_requests: Vec<(SourceId, Option<usize>)>,
     pub bots: u32,
     screen: Vec2,
     pub fps: f32,
@@ -525,7 +526,8 @@ impl Game {
             }
             p.joined = false;
             p.aim_visible = false;
-            if matches!(p.source, Some(SourceId::Wii(_))) {
+            if let Some(src @ SourceId::Wii(_)) = p.source {
+                self.led_requests.push((src, None));
                 p.source = None;
             }
         }
@@ -1450,7 +1452,7 @@ impl Game {
                             p.joined = true;
                             p.source = Some(inp.id);
                             p.reset_score();
-                            self.led_requests.push((inp.id, free));
+                            self.led_requests.push((inp.id, Some(free)));
                             self.rumble_requests.push((inp.id, 200));
                             self.sfx(Sfx::Join, 0.6, 0.0, 1.0 + free as f32 * 0.1);
                         }
@@ -2389,6 +2391,10 @@ impl Game {
             format!("{key}  ({:.0})", left.max(0.0).ceil())
         };
         ui.text_fit(&msg, w * 0.5, h * 0.84, 1.3, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
+        if !self.debug {
+            let hint = "REMOTE NOT CONNECTED? PRESS 1 AND 2 TOGETHER";
+            ui.text_fit(hint, w * 0.5, h * 0.84 + 13.0 * unit, 0.8, w * 0.9, [0.8, 0.8, 0.9, 0.8], Align::Center);
+        }
         // Which build this is, tucked into the corner.
         let version = env!("HAUNTED_VERSION");
         ui.text(version, w - 3.0 * unit, h - 9.0 * unit, 0.7, [0.6, 0.6, 0.7, 0.6], Align::Right);
