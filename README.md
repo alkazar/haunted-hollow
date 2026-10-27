@@ -44,28 +44,92 @@ cargo build --release
 
 ## Playing with Wii Remotes
 
-The game reads remotes through the kernel's `hid-wiimote` driver (in every mainstream kernel).
+### Connecting Wii Remotes
 
-1. **Pair** each remote (once):
-   ```sh
-   bluetoothctl
-   [bluetooth]# scan on          # now press the red SYNC button (or 1+2) on the remote
-   [bluetooth]# pair XX:XX:XX:XX:XX:XX
-   [bluetooth]# trust XX:XX:XX:XX:XX:XX
-   [bluetooth]# connect XX:XX:XX:XX:XX:XX
-   ```
-2. **Permissions**: the game opens `/dev/input/event*`. Either add yourself to the `input`
-   group (`sudo usermod -aG input $USER`, then log out/in) or install a udev rule:
-   ```
-   # /etc/udev/rules.d/70-wiimote.rules
-   SUBSYSTEM=="input", ATTRS{name}=="Nintendo Wii Remote*", TAG+="uaccess", MODE="0660"
-   SUBSYSTEM=="leds", KERNEL=="*:blue:p*", RUN+="/bin/chmod a+w /sys%p/brightness"
-   ```
-   (The second line is optional; it lets the game light each remote's player LED.)
-3. You need an **IR sensor bar** (a Wii console's bar while the Wii is on, or any USB /
-   battery sensor bar) above or below the TV.
+You need Bluetooth, the remotes, and an IR sensor bar. Step 1 is needed once per remote and
+step 2 once per computer.
 
-Remotes are hot-plugged at any time. On the title screen each child presses **A** to join and
+**1. Pair each remote**
+
+```sh
+bluetoothctl
+[bluetooth]# power on
+[bluetooth]# pairable on
+[bluetooth]# scan on
+```
+
+Press the red **SYNC** button under the battery cover (the LEDs start blinking). When it shows
+up as `Nintendo RVL-CNT-01` (or `Nintendo RVL-CNT-01-TR` for newer remotes), pair it using its
+address:
+
+```
+[bluetooth]# pair XX:XX:XX:XX:XX:XX
+[bluetooth]# trust XX:XX:XX:XX:XX:XX
+[bluetooth]# connect XX:XX:XX:XX:XX:XX
+[bluetooth]# scan off
+```
+
+If pairing fails, try again and press SYNC just before `pair`. Once a remote is trusted,
+pressing any button on it reconnects it. `bluetoothctl devices Connected` lists what's
+connected.
+
+**2. Let the game read the remotes (udev rule)**
+
+The game reads remotes through the kernel's `hid-wiimote` driver (in every mainstream kernel),
+which turns each remote into several input devices (`/dev/input/event*`) that normally only
+root can open. Install a udev rule that gives the logged-in user access:
+
+```sh
+sudo tee /etc/udev/rules.d/70-wiimote.rules <<'EOF'
+SUBSYSTEM=="input", ATTRS{name}=="Nintendo Wii Remote*", TAG+="uaccess", MODE="0660"
+SUBSYSTEM=="leds", KERNEL=="*:blue:p*", RUN+="/bin/chmod a+w /sys%p/brightness"
+EOF
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+The first rule is the important one; the second is optional and lets the game light each
+remote's player LED. Then turn the remote off (hold its power button) and reconnect it so the
+rule applies.
+
+(Alternatively, add yourself to the `input` group with `sudo usermod -aG input $USER` and log
+out and back in. That works too, but gives access to every input device, keyboards included.)
+
+To check it worked, with a remote connected:
+
+```sh
+grep -A5 "Wii Remote" /proc/bus/input/devices   # "Nintendo Wii Remote", "... IR", etc.
+ls -l /dev/input/event*                          # the remote's devices: crw-rw----+
+```
+
+**3. Set up the sensor bar**
+
+The remote aims by seeing two IR lights, so you need a **sensor bar**: a Wii console's bar (the
+Wii must be switched on), or any USB- or battery-powered one. Put it centred above or below the
+screen. Without it the buttons still work, but there's no crosshair.
+
+**Troubleshooting**
+
+* **Run with `--debug` and press F3.** The overlay shows how many remotes the game sees and the
+  raw IR dots each one picks up. No remotes listed means a pairing or permissions problem;
+  remotes but no dots means the remote can't see the sensor bar.
+* **The remote's devices show `c---------` (mode 0000) even with the rule installed.** Another
+  program is hiding the remote so that only it can read it. **InputPlumber** (a controller
+  remapper on some gaming-focused distros) does this, and its rules are in
+  `/run/udev/rules.d/50-inputplumber-hide-*.rules`. Stop it, clear its rules, then reconnect
+  the remote:
+  ```sh
+  sudo systemctl stop inputplumber
+  sudo rm /run/udev/rules.d/50-inputplumber-hide-*.rules
+  sudo udevadm control --reload
+  ```
+  If you don't need InputPlumber, `sudo systemctl mask --now inputplumber` stops it from coming
+  back (undo with `sudo systemctl unmask inputplumber`).
+* **The crosshair moves the wrong way or doesn't reach the edges.** See the pointer calibration
+  flags below.
+
+### Playing
+
+Remotes are hot-plugged at any time. On the title screen each player presses **A** to join and
 gets the next colour; anyone presses **+** to start (it also auto-starts 15 s after the first
 join). Late arrivals can press A mid-ride to jump in. After the score screen everyone goes
 back to the title and presses **A** again to play another round.
