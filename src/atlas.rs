@@ -61,6 +61,7 @@ pub const T_PAINTING3: u8 = 53;
 pub const T_SHIELD: u8 = 54;
 pub const T_GOLD: u8 = 55;
 pub const T_MIRROR: u8 = 56;
+pub const T_GRAVE_PLAIN: u8 = 57;
 
 /// UV rectangle (u0, v0, u1, v1) for a tile.
 pub fn tile_uv(t: u8) -> [f32; 4] {
@@ -334,24 +335,28 @@ pub fn build() -> Vec<u8> {
             (mix(hex(0xffb040), hex(0xffe080), hash(x / 2, y / 2, 28)), 1.0)
         }
     });
-    p.tile(T_GRAVE, |x, y| {
-        // Headstone face: bevelled edge, a small cross, and "RIP" carved underneath.
-        const RIP: [&str; 5] = ["###.###.###", "#.#..#..#.#", "##...#..###", "#.#..#..#..", "#.#.###.#.."];
-        let edge = x == 0 || x == 15 || y == 15 || y == 0;
-        let cross = (x == 7 || x == 8) && (2..=6).contains(&y) || y == 3 && (5..=10).contains(&x);
-        let text = (9..14).contains(&y) && (2..13).contains(&x) && RIP[(y - 9) as usize].as_bytes()[(x - 2) as usize] == b'#';
-        let moss = y >= 13 && hash(x, y, 30) > 0.6;
-        let c = if edge {
-            mul(hex(0x6e6e76), 0.9 + hash(x, y, 29) * 0.15)
-        } else if cross || text {
-            hex(0x4a4a52)
-        } else if moss {
-            mul(hex(0x5a7a40), 0.9 + hash(x, y, 31) * 0.2)
-        } else {
-            mul(hex(0x9a9aa2), 0.88 + hash(x, y, 29) * 0.16)
-        };
-        (c, 1.0)
-    });
+    // Headstone: bevelled stone with "RIP" carved in, and a plain version (no text)
+    // for the back and sides.
+    let headstone = |text: bool| {
+        move |x: i32, y: i32| {
+            const RIP: [&str; 5] = ["###.###.###", "#.#..#..#.#", "##...#..###", "#.#..#..#..", "#.#.###.#.."];
+            let edge = x == 0 || x == 15 || y == 15 || y == 0;
+            let carved = text && (5..10).contains(&y) && (2..13).contains(&x) && RIP[(y - 5) as usize].as_bytes()[(x - 2) as usize] == b'#';
+            let moss = y >= 13 && hash(x, y, 30) > 0.6;
+            let c = if edge {
+                mul(hex(0x6e6e76), 0.9 + hash(x, y, 29) * 0.15)
+            } else if carved {
+                hex(0x4a4a52)
+            } else if moss {
+                mul(hex(0x5a7a40), 0.9 + hash(x, y, 31) * 0.2)
+            } else {
+                mul(hex(0x9a9aa2), 0.88 + hash(x, y, 29) * 0.16)
+            };
+            (c, 1.0)
+        }
+    };
+    p.tile(T_GRAVE, headstone(true));
+    p.tile(T_GRAVE_PLAIN, headstone(false));
     p.tile(T_METAL, |x, y| (mul(hex(0x8a8f98), 0.8 + hash(x, y / 4, 30) * 0.3), 1.0));
     p.tile(T_BONE, |x, y| {
         let gap = (x + y * 3) % 7 == 0;

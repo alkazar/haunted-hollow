@@ -121,7 +121,7 @@ fn props(id: u8) -> Props {
         b::WEB => Props { opaque: false, shape: Shape::Cross, ..cube(T_COBWEB) },
         b::WINDOW => Props { opaque: false, shape: Shape::Glass, ..cube(T_WINDOW) },
         b::WINDOW_LIT => Props { emit: [12, 8, 3], glow: true, ..cube(T_WINDOW_LIT) },
-        b::GRAVE => Props { tiles: [T_STONE, T_GRAVE, T_STONE], ..cube(0) },
+        b::GRAVE => Props { tiles: [T_STONE, T_GRAVE_PLAIN, T_STONE], ..cube(0) },
         b::ROOF => cube(T_ROOF),
         b::CRYPT => cube(T_CRYPT),
         b::PURPLE => cube(T_PURPLE),
@@ -405,6 +405,9 @@ impl World {
             };
             if id == b::PUMPKIN && fi == meta as usize {
                 tile = T_PUMPKIN_FACE;
+            }
+            if id == b::GRAVE && fi == meta as usize {
+                tile = T_GRAVE;
             }
             let base = Vec3::new(x as f32, y as f32, z as f32);
             let (o, r, u) = (Vec3::from(*o), Vec3::from(*r), Vec3::from(*u));
@@ -722,6 +725,65 @@ fn pumpkin_spot_free(w: &World, x: i32, y: i32, z: i32) -> bool {
     w.is_air(x, y, z) && (-1..=1).all(|dx| (-1..=1).all(|dz| w.get(x + dx, y, z + dz) != b::PUMPKIN))
 }
 
+/// A fenced graveyard plot (fence at x0..x1 / z0..z1) with a two-wide gate at `gate`
+/// on the fence line, and rows of single headstones facing direction `face` (a cube
+/// face index: 0 +X, 1 -X, 4 +Z, 5 -Z). Each grave gets a dirt plot in front of it.
+#[allow(clippy::too_many_arguments)]
+fn grave_plot(w: &mut World, rng: &mut Rng, path: &[Vec3], x0: i32, x1: i32, z0: i32, z1: i32, face: u8, gate: (i32, i32)) {
+    let (fx, fz) = match face {
+        0 => (1, 0),
+        1 => (-1, 0),
+        4 => (0, 1),
+        _ => (0, -1),
+    };
+    let along_z = fx != 0; // gate in a fence that runs along z?
+    let is_gate = |x: i32, z: i32| {
+        if along_z {
+            x == gate.0 && (z == gate.1 || z == gate.1 + 1)
+        } else {
+            z == gate.1 && (x == gate.0 || x == gate.0 + 1)
+        }
+    };
+    // Fence, leaving the gate open; tall gateposts topped with lanterns.
+    for z in z0..=z1 {
+        for x in x0..=x1 {
+            let edge = x == x0 || x == x1 || z == z0 || z == z1;
+            if !edge || is_gate(x, z) || near_track(path, x as f32 + 0.5, z as f32 + 0.5, 3.2) || !w.is_air(x, 1, z) {
+                continue;
+            }
+            w.set(x, 1, z, b::FENCE);
+        }
+    }
+    let posts = if along_z { [(gate.0, gate.1 - 1), (gate.0, gate.1 + 2)] } else { [(gate.0 - 1, gate.1), (gate.0 + 2, gate.1)] };
+    for (px, pz) in posts {
+        w.fill(px, px, 1, 2, pz, pz, b::FENCE);
+        w.set(px, 3, pz, b::LANTERN);
+    }
+    // Rows of headstones (2 apart along a row, rows 3 apart).
+    let (row_step, col_step) = (3, 2);
+    let rows: Vec<i32> = if along_z { (x0 + 2..x1 - 1).step_by(row_step).collect() } else { (z0 + 2..z1 - 1).step_by(row_step).collect() };
+    let cols: Vec<i32> = if along_z { (z0 + 2..z1 - 1).step_by(col_step).collect() } else { (x0 + 2..x1 - 1).step_by(col_step).collect() };
+    for &r in &rows {
+        for &c in &cols {
+            let (x, z) = if along_z { (r, c) } else { (c, r) };
+            if rng.chance(0.15) || near_track(path, x as f32 + 0.5, z as f32 + 0.5, 4.0) || !w.is_air(x, 1, z) {
+                continue;
+            }
+            w.set_meta(x, 1, z, b::GRAVE, face);
+            // Dirt plot in front, sometimes with a jack-o'-lantern or a mushroom.
+            let (dx, dz) = (x + fx, z + fz);
+            if w.get(dx, 0, dz) == b::GRASS && w.is_air(dx, 1, dz) {
+                w.set(dx, 0, dz, b::DIRT);
+                if rng.chance(0.12) && pumpkin_spot_free(w, dx, 1, dz) {
+                    w.set_meta(dx, 1, dz, b::PUMPKIN, face);
+                } else if rng.chance(0.15) {
+                    w.set(dx, 1, dz, b::MUSHROOM);
+                }
+            }
+        }
+    }
+}
+
 fn near_track(path: &[Vec3], x: f32, z: f32, r: f32) -> bool {
     path.iter().any(|p| (p.x - x).powi(2) + (p.z - z).powi(2) < r * r && p.y > -2.0)
 }
@@ -737,17 +799,6 @@ fn facing_toward(x: f32, z: f32, tx: f32, tz: f32) -> u8 {
     } else {
         5
     }
-}
-
-fn nearest_on_path(path: &[Vec3], x: f32, z: f32) -> Vec3 {
-    *path
-        .iter()
-        .min_by(|a, b| {
-            let da = (a.x - x).powi(2) + (a.z - z).powi(2);
-            let db = (b.x - x).powi(2) + (b.z - z).powi(2);
-            da.partial_cmp(&db).unwrap()
-        })
-        .unwrap()
 }
 
 fn graveyard(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
@@ -784,51 +835,11 @@ fn graveyard(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
     w.set_meta(-5, 2, -18, b::PUMPKIN, 0);
     w.fill(-6, -6, 2, 2, -24, -22, b::HAY);
 
-    // Gravestones.
-    let mut placed = 0;
-    let mut tries = 0;
-    while placed < 70 && tries < 3000 {
-        tries += 1;
-        let x = rng.int(-22, 22);
-        let z = rng.int(-8, 36);
-        if near_track(path, x as f32 + 0.5, z as f32 + 0.5, 4.2) {
-            continue;
-        }
-        if !w.is_air(x, 1, z) || !w.is_air(x + 1, 1, z) || !w.is_air(x, 1, z + 1) {
-            continue;
-        }
-        let kind = rng.int(0, 4);
-        match kind {
-            0 | 1 => w.fill(x, x, 1, 1 + rng.int(0, 1), z, z, b::GRAVE),
-            2 => {
-                w.fill(x, x, 1, 3, z, z, b::GRAVE);
-                if rng.chance(0.5) {
-                    w.set(x - 1, 2, z, b::GRAVE);
-                    w.set(x + 1, 2, z, b::GRAVE);
-                } else {
-                    w.set(x, 2, z - 1, b::GRAVE);
-                    w.set(x, 2, z + 1, b::GRAVE);
-                }
-            }
-            3 => {
-                w.fill(x, x + 1, 1, 1, z, z + 2, b::COBBLE);
-                w.fill(x, x + 1, 2, 2, z, z, b::GRAVE);
-            }
-            _ => {
-                w.set(x, 1, z, b::GRAVE);
-                w.set(x, 0, z + 1, b::DIRT);
-                w.set(x, 0, z + 2, b::DIRT);
-            }
-        }
-        if rng.chance(0.3) {
-            let t = nearest_on_path(path, x as f32, z as f32 + 1.0);
-            let f = facing_toward(x as f32, z as f32 + 1.0, t.x, t.z);
-            if pumpkin_spot_free(w, x, 1, z + 1) {
-                w.set_meta(x, 1, z + 1, b::PUMPKIN, f);
-            }
-        }
-        placed += 1;
-    }
+    // Three small fenced graveyard plots with lantern-lit gates and neat rows of
+    // headstones, their "RIP" faces turned toward the ride.
+    grave_plot(w, rng, path, 8, 20, 7, 23, 1, (8, 14));
+    grave_plot(w, rng, path, -23, -13, -7, 13, 0, (-13, 2));
+    grave_plot(w, rng, path, -10, 0, 26, 32, 5, (-5, 26));
     // Extra jack-o'-lanterns lining the ride.
     let mut d = 6.0;
     while d < 60.0 {

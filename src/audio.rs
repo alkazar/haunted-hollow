@@ -229,7 +229,7 @@ impl Mixer {
         let cart = &self.bank.cart;
         for f in 0..frames {
             self.cart_vol += (self.cart_target - self.cart_vol) * 0.0005;
-            let v = self.cart_vol * 0.63; // louder rails (2.25x the original)
+            let v = self.cart_vol * 0.95; // louder rails (about 3.4x the original)
             out[f * 2] += cart.data[self.cart_pos * 2] * v;
             out[f * 2 + 1] += cart.data[self.cart_pos * 2 + 1] * v;
             self.cart_pos = (self.cart_pos + 1) % cart.frames();
