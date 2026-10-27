@@ -1,0 +1,1123 @@
+//! The voxel world: a graveyard, a haunted mansion (foyer, library, dining hall),
+//! a crypt beneath it and the Pumpkin King's lair. Includes Minecraft-style
+//! flood-fill block lighting (coloured) and moonlight, plus mesh generation.
+
+use crate::atlas::*;
+use crate::mesh::{push_box, push_quad, shade, FACES};
+use crate::rng::Rng;
+use crate::track::Track;
+use crate::vk::Vertex;
+use glam::{Mat4, Vec3};
+use std::collections::VecDeque;
+
+pub const X0: i32 = -40;
+pub const X1: i32 = 40;
+pub const Y0: i32 = -32;
+pub const Y1: i32 = 44;
+pub const Z0: i32 = -32;
+pub const Z1: i32 = 220;
+const SX: i32 = X1 - X0;
+const SY: i32 = Y1 - Y0;
+const SZ: i32 = Z1 - Z0;
+
+pub mod b {
+    pub const AIR: u8 = 0;
+    pub const GRASS: u8 = 1;
+    pub const DIRT: u8 = 2;
+    pub const STONE: u8 = 3;
+    pub const COBBLE: u8 = 4;
+    pub const MOSSY: u8 = 5;
+    pub const STONEBRICK: u8 = 6;
+    pub const PLANK: u8 = 7;
+    pub const DARKPLANK: u8 = 8;
+    pub const LOG: u8 = 9;
+    pub const WALL_PURPLE: u8 = 10;
+    pub const WALL_GREEN: u8 = 11;
+    pub const CARPET: u8 = 12;
+    pub const BOOKSHELF: u8 = 13;
+    pub const PUMPKIN: u8 = 14;
+    pub const WEB: u8 = 15;
+    pub const WINDOW: u8 = 16;
+    pub const WINDOW_LIT: u8 = 17;
+    pub const GRAVE: u8 = 18;
+    pub const ROOF: u8 = 19;
+    pub const CRYPT: u8 = 20;
+    pub const PURPLE: u8 = 21;
+    pub const TORCH: u8 = 22;
+    pub const SOUL_TORCH: u8 = 23;
+    pub const LANTERN: u8 = 24;
+    pub const CLOTH: u8 = 25;
+    pub const PORTRAIT: u8 = 26;
+    pub const FENCE: u8 = 27;
+    pub const CANDLE: u8 = 28;
+    pub const AMETHYST: u8 = 29;
+    pub const BONES: u8 = 30;
+    pub const FIRE: u8 = 31;
+    pub const HAY: u8 = 32;
+    pub const PORTRAIT2: u8 = 33;
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    Cube,
+    Glass,
+    Cross,
+    Torch,
+    Post,
+    Candle,
+    Lantern,
+    Bones,
+}
+
+#[derive(Clone, Copy)]
+struct Props {
+    opaque: bool,
+    shape: Shape,
+    tiles: [u8; 3], // top, side, bottom
+    emit: [u8; 3],
+    glow: bool,
+}
+
+fn props(id: u8) -> Props {
+    let cube = |t: u8| Props { opaque: true, shape: Shape::Cube, tiles: [t, t, t], emit: [0; 3], glow: false };
+    match id {
+        b::GRASS => Props { tiles: [T_GRASS_TOP, T_GRASS_SIDE, T_DIRT], ..cube(0) },
+        b::DIRT => cube(T_DIRT),
+        b::STONE => cube(T_STONE),
+        b::COBBLE => cube(T_COBBLE),
+        b::MOSSY => cube(T_MOSSY),
+        b::STONEBRICK => cube(T_STONEBRICK),
+        b::PLANK => cube(T_PLANK),
+        b::DARKPLANK => cube(T_DARKPLANK),
+        b::LOG => Props { tiles: [T_LOG_TOP, T_LOG, T_LOG_TOP], ..cube(0) },
+        b::WALL_PURPLE => cube(T_WALL_PURPLE),
+        b::WALL_GREEN => cube(T_WALL_GREEN),
+        b::CARPET => cube(T_CARPET),
+        b::BOOKSHELF => Props { tiles: [T_PLANK, T_BOOKSHELF, T_PLANK], ..cube(0) },
+        b::PUMPKIN => Props { tiles: [T_PUMPKIN_TOP, T_PUMPKIN_SIDE, T_PUMPKIN_TOP], emit: [14, 9, 3], ..cube(0) },
+        b::WEB => Props { opaque: false, shape: Shape::Cross, ..cube(T_COBWEB) },
+        b::WINDOW => Props { opaque: false, shape: Shape::Glass, ..cube(T_WINDOW) },
+        b::WINDOW_LIT => Props { emit: [12, 8, 3], glow: true, ..cube(T_WINDOW_LIT) },
+        b::GRAVE => cube(T_GRAVE),
+        b::ROOF => cube(T_ROOF),
+        b::CRYPT => cube(T_CRYPT),
+        b::PURPLE => cube(T_PURPLE),
+        b::TORCH => Props { opaque: false, shape: Shape::Torch, emit: [15, 11, 6], ..cube(T_WHITE) },
+        b::SOUL_TORCH => Props { opaque: false, shape: Shape::Torch, emit: [4, 14, 11], ..cube(T_WHITE) },
+        b::LANTERN => Props { opaque: false, shape: Shape::Lantern, emit: [15, 13, 9], glow: true, ..cube(T_LANTERN) },
+        b::CLOTH => cube(T_CLOTH),
+        b::PORTRAIT => Props { tiles: [T_DARKPLANK, T_PORTRAIT, T_DARKPLANK], ..cube(0) },
+        b::PORTRAIT2 => Props { tiles: [T_DARKPLANK, T_PORTRAIT2, T_DARKPLANK], ..cube(0) },
+        b::FENCE => Props { opaque: false, shape: Shape::Post, ..cube(T_METAL) },
+        b::CANDLE => Props { opaque: false, shape: Shape::Candle, emit: [11, 8, 4], ..cube(T_WHITE) },
+        b::AMETHYST => Props { emit: [11, 5, 15], glow: true, ..cube(T_AMETHYST) },
+        b::BONES => Props { opaque: false, shape: Shape::Bones, ..cube(T_BONE) },
+        b::FIRE => Props { opaque: false, shape: Shape::Cross, emit: [15, 9, 3], glow: true, ..cube(T_FIRE) },
+        b::HAY => Props { tiles: [T_HAY, T_HAY, T_HAY], ..cube(0) },
+        _ => Props { opaque: false, shape: Shape::Cube, tiles: [0; 3], emit: [0; 3], glow: false },
+    }
+}
+
+pub struct World {
+    blocks: Vec<u8>,
+    meta: Vec<u8>,
+    light: Vec<[u8; 4]>, // r, g, b, sky
+}
+
+const MOON: Vec3 = Vec3::new(0.36, 0.40, 0.62);
+const AMBIENT: Vec3 = Vec3::new(0.06, 0.05, 0.08);
+
+fn curve(l: u8) -> f32 {
+    if l == 0 { 0.0 } else { 0.86f32.powi(15 - l as i32) }
+}
+
+impl World {
+    fn new() -> World {
+        let n = (SX * SY * SZ) as usize;
+        World { blocks: vec![0; n], meta: vec![0; n], light: vec![[0; 4]; n] }
+    }
+
+    #[inline]
+    fn idx(x: i32, y: i32, z: i32) -> Option<usize> {
+        if x < X0 || x >= X1 || y < Y0 || y >= Y1 || z < Z0 || z >= Z1 {
+            None
+        } else {
+            Some((((z - Z0) * SY + (y - Y0)) * SX + (x - X0)) as usize)
+        }
+    }
+
+    pub fn get(&self, x: i32, y: i32, z: i32) -> u8 {
+        match Self::idx(x, y, z) {
+            Some(i) => self.blocks[i],
+            None => {
+                if y < Y0 { b::STONE } else { b::AIR }
+            }
+        }
+    }
+
+    pub fn solid_at(&self, p: Vec3) -> bool {
+        props(self.get(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)).opaque
+    }
+
+    fn set(&mut self, x: i32, y: i32, z: i32, id: u8) {
+        if let Some(i) = Self::idx(x, y, z) {
+            self.blocks[i] = id;
+            self.meta[i] = 0;
+        }
+    }
+
+    fn set_meta(&mut self, x: i32, y: i32, z: i32, id: u8, m: u8) {
+        if let Some(i) = Self::idx(x, y, z) {
+            self.blocks[i] = id;
+            self.meta[i] = m;
+        }
+    }
+
+    fn fill(&mut self, x0: i32, x1: i32, y0: i32, y1: i32, z0: i32, z1: i32, id: u8) {
+        for z in z0..=z1 {
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    self.set(x, y, z, id);
+                }
+            }
+        }
+    }
+
+    /// Hollow box: floor, walls, ceiling, air inside (bounds inclusive).
+    fn room(&mut self, x0: i32, x1: i32, y0: i32, y1: i32, z0: i32, z1: i32, wall: u8, floor: u8, ceil: u8) {
+        for z in z0..=z1 {
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let id = if y == y0 {
+                        floor
+                    } else if y == y1 {
+                        ceil
+                    } else if x == x0 || x == x1 || z == z0 || z == z1 {
+                        wall
+                    } else {
+                        b::AIR
+                    };
+                    self.set(x, y, z, id);
+                }
+            }
+        }
+    }
+
+    fn is_air(&self, x: i32, y: i32, z: i32) -> bool {
+        self.get(x, y, z) == b::AIR
+    }
+
+    /// Light colour at a world position (for entities).
+    pub fn light_at(&self, p: Vec3) -> Vec3 {
+        let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        let mut l = self.light_cell(x, y, z);
+        if props(self.get(x, y, z)).opaque {
+            l = self.light_cell(x, y + 1, z);
+        }
+        l
+    }
+
+    fn light_cell(&self, x: i32, y: i32, z: i32) -> Vec3 {
+        match Self::idx(x, y, z) {
+            Some(i) => {
+                let l = self.light[i];
+                Vec3::new(curve(l[0]), curve(l[1]), curve(l[2])) + MOON * curve(l[3]) + AMBIENT
+            }
+            None => MOON + AMBIENT,
+        }
+    }
+
+    // ------------------------------------------------------------------ lighting
+
+    fn compute_light(&mut self) {
+        let n = self.blocks.len();
+        let opaque: Vec<bool> = self.blocks.iter().map(|&id| props(id).opaque).collect();
+        // Sky light: straight down from the top until something opaque.
+        let mut q: VecDeque<usize> = VecDeque::new();
+        for z in Z0..Z1 {
+            for x in X0..X1 {
+                for y in (Y0..Y1).rev() {
+                    let i = Self::idx(x, y, z).unwrap();
+                    if opaque[i] {
+                        break;
+                    }
+                    self.light[i][3] = 15;
+                    q.push_back(i);
+                }
+            }
+        }
+        self.flood(&opaque, q, 3);
+        // Block light per colour channel.
+        for ch in 0..3 {
+            let mut q = VecDeque::new();
+            for i in 0..n {
+                let e = props(self.blocks[i]).emit[ch];
+                if e > 0 {
+                    self.light[i][ch] = e;
+                    q.push_back(i);
+                }
+            }
+            self.flood(&opaque, q, ch);
+        }
+    }
+
+    fn flood(&mut self, opaque: &[bool], mut q: VecDeque<usize>, ch: usize) {
+        let strides: [isize; 6] = [1, -1, SX as isize, -(SX as isize), (SX * SY) as isize, -((SX * SY) as isize)];
+        while let Some(i) = q.pop_front() {
+            let l = self.light[i][ch];
+            if l <= 1 {
+                continue;
+            }
+            let x = (i as i32) % SX;
+            let y = ((i as i32) / SX) % SY;
+            let z = (i as i32) / (SX * SY);
+            for (k, s) in strides.iter().enumerate() {
+                let ok = match k {
+                    0 => x + 1 < SX,
+                    1 => x > 0,
+                    2 => y + 1 < SY,
+                    3 => y > 0,
+                    4 => z + 1 < SZ,
+                    _ => z > 0,
+                };
+                if !ok {
+                    continue;
+                }
+                let j = (i as isize + s) as usize;
+                if opaque[j] {
+                    continue;
+                }
+                if self.light[j][ch] + 1 < l {
+                    self.light[j][ch] = l - 1;
+                    q.push_back(j);
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ meshing
+
+    pub fn build_mesh(&self, track: &Track) -> Vec<Vertex> {
+        let mut out = Vec::with_capacity(1 << 20);
+        for z in Z0..Z1 {
+            for y in Y0..Y1 {
+                for x in X0..X1 {
+                    let i = Self::idx(x, y, z).unwrap();
+                    let id = self.blocks[i];
+                    if id == b::AIR {
+                        continue;
+                    }
+                    let p = props(id);
+                    match p.shape {
+                        Shape::Cube | Shape::Glass => self.mesh_cube(&mut out, x, y, z, id, &p, self.meta[i]),
+                        _ => self.mesh_special(&mut out, x, y, z, id, &p),
+                    }
+                }
+            }
+        }
+        self.mesh_track(&mut out, track);
+        sky(&mut out);
+        out
+    }
+
+    fn mesh_cube(&self, out: &mut Vec<Vertex>, x: i32, y: i32, z: i32, id: u8, p: &Props, meta: u8) {
+        for (fi, (n, o, r, u)) in FACES.iter().enumerate() {
+            let (nx, ny, nz) = (x + n[0], y + n[1], z + n[2]);
+            let nid = self.get(nx, ny, nz);
+            let np = props(nid);
+            if np.opaque || (p.shape == Shape::Glass && nid == id) {
+                continue;
+            }
+            let mut tile = match fi {
+                2 => p.tiles[0],
+                3 => p.tiles[2],
+                _ => p.tiles[1],
+            };
+            if id == b::PUMPKIN && fi == meta as usize {
+                tile = T_PUMPKIN_FACE;
+            }
+            let base = Vec3::new(x as f32, y as f32, z as f32);
+            let (o, r, u) = (Vec3::from(*o), Vec3::from(*r), Vec3::from(*u));
+            let pts = [base + o, base + o + r, base + o + r + u, base + o + u];
+            let nv = Vec3::new(n[0] as f32, n[1] as f32, n[2] as f32);
+            let s = shade(nv);
+            let mut cols = [[0.0f32; 4]; 4];
+            let mut aos = [0u8; 4];
+            let corners = [(0, 0), (1, 0), (1, 1), (0, 1)];
+            let ri = [r.x as i32, r.y as i32, r.z as i32];
+            let ui = [u.x as i32, u.y as i32, u.z as i32];
+            for (k, (tr, tu)) in corners.iter().enumerate() {
+                let sr = 2 * tr - 1;
+                let su = 2 * tu - 1;
+                let a = [nx + ri[0] * sr, ny + ri[1] * sr, nz + ri[2] * sr];
+                let bb = [nx + ui[0] * su, ny + ui[1] * su, nz + ui[2] * su];
+                let c = [a[0] + ui[0] * su, a[1] + ui[1] * su, a[2] + ui[2] * su];
+                let oa = props(self.get(a[0], a[1], a[2])).opaque;
+                let ob = props(self.get(bb[0], bb[1], bb[2])).opaque;
+                let oc = props(self.get(c[0], c[1], c[2])).opaque;
+                let ao = if oa && ob { 0 } else { 3 - (oa as u8 + ob as u8 + oc as u8) };
+                aos[k] = ao;
+                let mut l = self.light_cell(nx, ny, nz);
+                let mut cnt = 1.0;
+                if !oa {
+                    l += self.light_cell(a[0], a[1], a[2]);
+                    cnt += 1.0;
+                }
+                if !ob {
+                    l += self.light_cell(bb[0], bb[1], bb[2]);
+                    cnt += 1.0;
+                }
+                if !oc && !(oa && ob) {
+                    l += self.light_cell(c[0], c[1], c[2]);
+                    cnt += 1.0;
+                }
+                l /= cnt;
+                let aof = [0.45, 0.65, 0.82, 1.0][ao as usize];
+                if p.glow || (id == b::PUMPKIN && tile == T_PUMPKIN_FACE) {
+                    let g = 0.85 + 0.15 * s;
+                    cols[k] = [g, g, g, 0.0];
+                } else {
+                    let c = l * s * aof;
+                    cols[k] = [c.x, c.y, c.z, s * aof];
+                }
+            }
+            let uv = tile_uv(tile);
+            // Flip the quad diagonal to avoid ugly AO interpolation.
+            if (aos[0] as i32 + aos[2] as i32) < (aos[1] as i32 + aos[3] as i32) {
+                let pts2 = [pts[1], pts[2], pts[3], pts[0]];
+                let cols2 = [cols[1], cols[2], cols[3], cols[0]];
+                let uvs = [[uv[2], uv[3]], [uv[2], uv[1]], [uv[0], uv[1]], [uv[0], uv[3]]];
+                for k in 0..4 {
+                    out.push(Vertex { pos: pts2[k].to_array(), uv: uvs[k], color: cols2[k] });
+                }
+            } else {
+                push_quad(out, pts, uv, cols);
+            }
+        }
+    }
+
+    fn mesh_special(&self, out: &mut Vec<Vertex>, x: i32, y: i32, z: i32, id: u8, p: &Props) {
+        let c = Vec3::new(x as f32 + 0.5, y as f32, z as f32 + 0.5);
+        let light = self.light_cell(x, y, z);
+        let m = |center: Vec3, size: Vec3| Mat4::from_translation(center) * Mat4::from_scale(size);
+        match p.shape {
+            Shape::Torch => {
+                // Lean toward an adjacent wall if there is one.
+                let mut off = Vec3::ZERO;
+                for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    if props(self.get(x + dx, y, z + dz)).opaque {
+                        off = Vec3::new(dx as f32, 0.0, dz as f32) * 0.32;
+                        break;
+                    }
+                }
+                let flame = if id == b::SOUL_TORCH { [0.45, 1.0, 0.85] } else { [1.0, 0.78, 0.3] };
+                push_box(out, &m(c + off + Vec3::Y * 0.32, Vec3::new(0.14, 0.62, 0.14)), T_DARKPLANK, [1.0; 3], light, 0.0);
+                push_box(out, &m(c + off + Vec3::Y * 0.7, Vec3::new(0.2, 0.22, 0.2)), T_WHITE, flame, light, 1.0);
+            }
+            Shape::Candle => {
+                push_box(out, &m(c + Vec3::Y * 0.17, Vec3::new(0.18, 0.34, 0.18)), T_WHITE, [0.95, 0.92, 0.8], light, 0.3);
+                push_box(out, &m(c + Vec3::Y * 0.42, Vec3::new(0.1, 0.14, 0.1)), T_WHITE, [1.0, 0.8, 0.3], light, 1.0);
+            }
+            Shape::Lantern => {
+                push_box(out, &m(c + Vec3::Y * 0.4, Vec3::splat(0.6)), T_LANTERN, [1.0; 3], light, 1.0);
+                if self.get(x, y + 1, z) == b::FENCE {
+                    push_box(out, &m(c + Vec3::Y * 0.85, Vec3::new(0.08, 0.3, 0.08)), T_METAL, [0.35; 3], light, 0.0);
+                }
+            }
+            Shape::Post => {
+                let tint = [0.32, 0.3, 0.34];
+                push_box(out, &m(c + Vec3::Y * 0.5, Vec3::new(0.18, 1.0, 0.18)), T_METAL, tint, light, 0.0);
+                if self.get(x, y + 1, z) != b::FENCE && !props(self.get(x, y + 1, z)).opaque {
+                    push_box(out, &m(c + Vec3::Y * 1.05, Vec3::new(0.1, 0.12, 0.1)), T_METAL, tint, light, 0.0);
+                }
+                for (dx, dz) in [(1, 0), (0, 1)] {
+                    if self.get(x + dx, y, z + dz) == b::FENCE {
+                        let mid = c + Vec3::new(dx as f32, 0.0, dz as f32) * 0.5;
+                        let size = if dx == 1 { Vec3::new(1.0, 0.1, 0.08) } else { Vec3::new(0.08, 0.1, 1.0) };
+                        push_box(out, &m(mid + Vec3::Y * 0.35, size), T_METAL, tint, light, 0.0);
+                        push_box(out, &m(mid + Vec3::Y * 0.8, size), T_METAL, tint, light, 0.0);
+                    }
+                }
+            }
+            Shape::Bones => {
+                let h = crate::mesh::hash3(x, y, z);
+                for k in 0..3 {
+                    let a = h * 6.28 + k as f32 * 2.1;
+                    let pos = c + Vec3::new(a.cos() * 0.25, 0.06 + k as f32 * 0.02, a.sin() * 0.25);
+                    let mm = Mat4::from_translation(pos)
+                        * Mat4::from_rotation_y(a)
+                        * Mat4::from_scale(Vec3::new(0.55, 0.1, 0.1));
+                    push_box(out, &mm, T_BONE, [1.0; 3], light, 0.2);
+                }
+                let skull = Mat4::from_translation(c + Vec3::new(0.15 * h, 0.14, -0.1)) * Mat4::from_scale(Vec3::splat(0.28));
+                push_box(out, &skull, T_BONE, [1.0; 3], light, 0.2);
+            }
+            Shape::Cross => {
+                let uv = tile_uv(p.tiles[1]);
+                let col = if p.glow { [1.0, 1.0, 1.0, 0.0] } else { [light.x, light.y, light.z, 1.0] };
+                let base = Vec3::new(x as f32, y as f32, z as f32);
+                for (a, bb) in [
+                    (Vec3::new(0.1, 0.0, 0.1), Vec3::new(0.9, 0.0, 0.9)),
+                    (Vec3::new(0.9, 0.0, 0.1), Vec3::new(0.1, 0.0, 0.9)),
+                ] {
+                    let pts = [base + a, base + bb, base + bb + Vec3::Y, base + a + Vec3::Y];
+                    push_quad(out, pts, uv, [col; 4]);
+                    let back = [pts[1], pts[0], pts[3], pts[2]];
+                    push_quad(out, back, uv, [col; 4]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn mesh_track(&self, out: &mut Vec<Vertex>, track: &Track) {
+        let samples = track.samples(0.5);
+        for w in samples.windows(2) {
+            let (a, bf) = (w[0], w[1]);
+            let fwd = (bf.pos - a.pos).normalize_or_zero();
+            if fwd == Vec3::ZERO {
+                continue;
+            }
+            let right = fwd.cross(Vec3::Y).normalize_or_zero();
+            let up = right.cross(fwd).normalize_or_zero();
+            let len = a.pos.distance(bf.pos) + 0.02;
+            let mid = (a.pos + bf.pos) * 0.5;
+            let light = self.light_at(mid + Vec3::Y * 0.5);
+            for side in [-0.55f32, 0.55] {
+                let c = mid + right * side + up * 0.12;
+                let m = Mat4::from_cols(
+                    (right * 0.1).extend(0.0),
+                    (up * 0.12).extend(0.0),
+                    (fwd * len).extend(0.0),
+                    c.extend(1.0),
+                );
+                push_box(out, &m, T_METAL, [0.9, 0.9, 1.0], light, 0.0);
+            }
+        }
+        for f in track.samples(0.9) {
+            let light = self.light_at(f.pos + Vec3::Y * 0.5);
+            let c = f.pos + f.up * 0.03;
+            let m = Mat4::from_cols(
+                (f.right * 1.5).extend(0.0),
+                (f.up * 0.08).extend(0.0),
+                (f.fwd * 0.28).extend(0.0),
+                c.extend(1.0),
+            );
+            push_box(out, &m, T_DARKPLANK, [1.0; 3], light, 0.0);
+        }
+    }
+}
+
+fn sky(out: &mut Vec<Vertex>) {
+    // Moon and stars: drawn unlit and unfogged (alpha 2 flag in the shader).
+    let moon = Mat4::from_translation(Vec3::new(-110.0, 120.0, 280.0)) * Mat4::from_scale(Vec3::splat(26.0));
+    for (n, o, r, u) in FACES.iter() {
+        let o = Vec3::from(*o) - 0.5;
+        let (r, u) = (Vec3::from(*r), Vec3::from(*u));
+        let pts = [o, o + r, o + r + u, o + u].map(|p| moon.transform_point3(p));
+        let k = 0.85 + 0.15 * (n[1] as f32 * 0.5 + 0.5);
+        push_quad(out, pts, tile_uv(T_MOON), [[k, k, k * 0.95, 2.0]; 4]);
+    }
+    let mut rng = Rng::new(99);
+    let center = Vec3::new(0.0, 0.0, 80.0);
+    for _ in 0..500 {
+        let az = rng.range(0.0, std::f32::consts::TAU);
+        let el = rng.range(0.08, 1.45);
+        let dir = Vec3::new(az.cos() * el.cos(), el.sin(), az.sin() * el.cos());
+        let p = center + dir * 340.0;
+        let right = dir.cross(Vec3::Y).normalize_or_zero();
+        let up = right.cross(dir).normalize_or_zero();
+        let s = rng.range(0.8, 2.2);
+        let b = rng.range(0.5, 1.0);
+        let pts = [
+            p - right * s - up * s,
+            p - up * s + right * s,
+            p + right * s + up * s,
+            p + up * s - right * s,
+        ];
+        // Face toward the centre (reverse winding so it passes back-face culling).
+        let pts = [pts[1], pts[0], pts[3], pts[2]];
+        push_quad(out, pts, tile_uv(T_STAR), [[b, b, b * 0.9, 2.0]; 4]);
+    }
+}
+
+// ====================================================================== generation
+
+/// Which part of the ride a z coordinate belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Zone {
+    Graveyard,
+    Foyer,
+    Library,
+    Dining,
+    Drop,
+    Crypt,
+    Lair,
+}
+
+pub fn zone_at(p: Vec3) -> Zone {
+    if p.z < 39.5 {
+        Zone::Graveyard
+    } else if p.z < 70.5 {
+        Zone::Foyer
+    } else if p.z < 100.5 {
+        Zone::Library
+    } else if p.z < 127.5 && p.y > -0.5 {
+        Zone::Dining
+    } else if p.z < 140.0 {
+        Zone::Drop
+    } else if p.z < 176.5 {
+        Zone::Crypt
+    } else {
+        Zone::Lair
+    }
+}
+
+pub fn generate(track: &Track) -> World {
+    let mut w = World::new();
+    let mut rng = Rng::new(1031);
+
+    // Ground.
+    for z in Z0..Z1 {
+        for x in X0..X1 {
+            for y in Y0..=0 {
+                let id = if y == 0 {
+                    b::GRASS
+                } else if y >= -3 {
+                    b::DIRT
+                } else {
+                    b::STONE
+                };
+                w.set(x, y, z, id);
+            }
+        }
+    }
+    let path: Vec<Vec3> = track.samples(1.0).iter().map(|f| f.pos).collect();
+    graveyard(&mut w, &mut rng, &path);
+    house(&mut w, &mut rng);
+    crypt(&mut w, &mut rng);
+    lair(&mut w, &mut rng);
+    carve(&mut w, track);
+    after_carve(&mut w, track);
+    w.compute_light();
+    w
+}
+
+fn near_track(path: &[Vec3], x: f32, z: f32, r: f32) -> bool {
+    path.iter().any(|p| (p.x - x).powi(2) + (p.z - z).powi(2) < r * r && p.y > -2.0)
+}
+
+/// Face index (into FACES) pointing from (x,z) toward the target.
+fn facing_toward(x: f32, z: f32, tx: f32, tz: f32) -> u8 {
+    let dx = tx - x;
+    let dz = tz - z;
+    if dx.abs() > dz.abs() {
+        if dx > 0.0 { 0 } else { 1 }
+    } else if dz > 0.0 {
+        4
+    } else {
+        5
+    }
+}
+
+fn nearest_on_path(path: &[Vec3], x: f32, z: f32) -> Vec3 {
+    *path
+        .iter()
+        .min_by(|a, b| {
+            let da = (a.x - x).powi(2) + (a.z - z).powi(2);
+            let db = (b.x - x).powi(2) + (b.z - z).powi(2);
+            da.partial_cmp(&db).unwrap()
+        })
+        .unwrap()
+}
+
+fn graveyard(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
+    // Cemetery gate with pumpkins on top.
+    w.fill(-6, -5, 1, 7, -10, -9, b::STONEBRICK);
+    w.fill(5, 6, 1, 7, -10, -9, b::STONEBRICK);
+    w.fill(-6, 6, 8, 8, -10, -9, b::STONEBRICK);
+    w.set_meta(-6, 9, -10, b::PUMPKIN, 5);
+    w.set_meta(6, 9, -10, b::PUMPKIN, 5);
+    w.set_meta(0, 9, -10, b::PUMPKIN, 5);
+    // Iron fence around the cemetery.
+    for z in -26..=37 {
+        for x in [-24, 24] {
+            w.fill(x, x, 1, 2, z, z, b::FENCE);
+        }
+    }
+    for x in -24..=24i32 {
+        if x.abs() > 6 {
+            w.fill(x, x, 1, 2, -10, -10, b::FENCE);
+        }
+    }
+    // Station platform with hay and pumpkins.
+    w.fill(3, 6, 1, 1, -28, -15, b::DARKPLANK);
+    w.fill(-6, -3, 1, 1, -28, -15, b::DARKPLANK);
+    for z in [-26, -20] {
+        for x in [5, -5] {
+            w.fill(x, x, 2, 4, z, z, b::FENCE);
+            w.set(x, 5, z, b::LANTERN);
+        }
+    }
+    w.fill(5, 6, 2, 2, -17, -16, b::HAY);
+    w.set(6, 3, -17, b::HAY);
+    w.set_meta(5, 3, -16, b::PUMPKIN, 1);
+    w.set_meta(-5, 2, -18, b::PUMPKIN, 0);
+    w.fill(-6, -6, 2, 2, -24, -22, b::HAY);
+
+    // Gravestones.
+    let mut placed = 0;
+    let mut tries = 0;
+    while placed < 70 && tries < 3000 {
+        tries += 1;
+        let x = rng.int(-22, 22);
+        let z = rng.int(-8, 36);
+        if near_track(path, x as f32 + 0.5, z as f32 + 0.5, 4.2) {
+            continue;
+        }
+        if !w.is_air(x, 1, z) || !w.is_air(x + 1, 1, z) || !w.is_air(x, 1, z + 1) {
+            continue;
+        }
+        let kind = rng.int(0, 4);
+        match kind {
+            0 | 1 => w.fill(x, x, 1, 1 + rng.int(0, 1), z, z, b::GRAVE),
+            2 => {
+                w.fill(x, x, 1, 3, z, z, b::GRAVE);
+                if rng.chance(0.5) {
+                    w.set(x - 1, 2, z, b::GRAVE);
+                    w.set(x + 1, 2, z, b::GRAVE);
+                } else {
+                    w.set(x, 2, z - 1, b::GRAVE);
+                    w.set(x, 2, z + 1, b::GRAVE);
+                }
+            }
+            3 => {
+                w.fill(x, x + 1, 1, 1, z, z + 2, b::COBBLE);
+                w.fill(x, x + 1, 2, 2, z, z, b::GRAVE);
+            }
+            _ => {
+                w.set(x, 1, z, b::GRAVE);
+                w.set(x, 0, z + 1, b::DIRT);
+                w.set(x, 0, z + 2, b::DIRT);
+            }
+        }
+        if rng.chance(0.3) {
+            let t = nearest_on_path(path, x as f32, z as f32 + 1.0);
+            let f = facing_toward(x as f32, z as f32 + 1.0, t.x, t.z);
+            if w.is_air(x, 1, z + 1) {
+                w.set_meta(x, 1, z + 1, b::PUMPKIN, f);
+            }
+        }
+        placed += 1;
+    }
+    // Extra jack-o'-lanterns lining the ride.
+    let mut d = 6.0;
+    while d < 60.0 {
+        let i = (d as usize).min(path.len() - 2);
+        let p = path[i];
+        if p.z > 37.0 {
+            break;
+        }
+        let fwd = (path[i + 1] - p).normalize_or_zero();
+        let right = fwd.cross(Vec3::Y).normalize_or_zero();
+        let side = if (d as i32 / 7) % 2 == 0 { 3.3 } else { -3.3 };
+        let q = p + right * side;
+        let (x, z) = (q.x.floor() as i32, q.z.floor() as i32);
+        if w.is_air(x, 1, z) {
+            w.set_meta(x, 1, z, b::PUMPKIN, facing_toward(q.x, q.z, p.x, p.z));
+        }
+        // Lamp posts.
+        let q2 = p - right * side * 1.1;
+        let (x2, z2) = (q2.x.floor() as i32, q2.z.floor() as i32);
+        if (d as i32) % 14 == 6 && w.is_air(x2, 1, z2) {
+            w.fill(x2, x2, 1, 3, z2, z2, b::FENCE);
+            w.set(x2, 4, z2, b::LANTERN);
+        }
+        d += 7.0;
+    }
+    // Dead trees.
+    for &(tx, tz, h) in &[(-17, 4, 8), (15, 10, 7), (-12, 30, 9), (18, 31, 6), (-20, -4, 7), (12, -3, 6)] {
+        w.fill(tx, tx, 1, h, tz, tz, b::LOG);
+        for &(dx, dz, len) in &[(1, 0, 3), (-1, 1, 2), (0, -1, 3), (-1, 0, 2)] {
+            let mut x = tx;
+            let mut z = tz;
+            let mut y = h - 2 + (dx + dz as i32).abs() % 2;
+            for _ in 0..len {
+                x += dx;
+                z += dz;
+                y += 1;
+                w.set(x, y, z, b::LOG);
+            }
+            if rng.chance(0.4) {
+                w.set(x, y - 1, z, b::WEB);
+            }
+        }
+    }
+    // A little mausoleum.
+    w.room(-22, -15, 0, 7, 18, 26, b::STONEBRICK, b::MOSSY, b::STONEBRICK);
+    w.fill(-23, -14, 8, 8, 17, 27, b::STONEBRICK);
+    w.fill(-21, -16, 9, 9, 18, 26, b::STONEBRICK);
+    w.fill(-15, -15, 1, 3, 21, 23, b::AIR);
+    w.set(-14, 3, 20, b::SOUL_TORCH);
+    w.set(-14, 3, 24, b::SOUL_TORCH);
+    w.fill(-15, -15, 4, 4, 21, 23, b::COBBLE);
+}
+
+fn house(w: &mut World, rng: &mut Rng) {
+    // Outer shell and rooms (walls are 2 thick: dark planks outside, wallpaper inside).
+    w.room(-17, 17, 0, 19, 39, 131, b::DARKPLANK, b::DARKPLANK, b::DARKPLANK);
+    for z in (39..=131).step_by(8) {
+        w.fill(-17, -17, 1, 19, z, z, b::LOG);
+        w.fill(17, 17, 1, 19, z, z, b::LOG);
+    }
+    for x in (-17..=17).step_by(6) {
+        w.fill(x, x, 1, 19, 39, 39, b::LOG);
+        w.fill(x, x, 1, 19, 131, 131, b::LOG);
+    }
+    w.room(-16, 16, 0, 18, 40, 70, b::WALL_PURPLE, b::DARKPLANK, b::DARKPLANK);
+    w.room(-16, 16, 0, 18, 71, 100, b::WALL_GREEN, b::PLANK, b::DARKPLANK);
+    w.room(-16, 16, 0, 18, 101, 130, b::STONEBRICK, b::PLANK, b::DARKPLANK);
+
+    // Stepped roof.
+    for k in 0..19 {
+        let y = 20 + k;
+        let (x0, x1) = (-18 + k, 18 - k);
+        if x0 > x1 {
+            break;
+        }
+        w.fill(x0, x1, y, y, 38, 132, b::ROOF);
+    }
+    // Chimney and corner towers.
+    w.fill(9, 11, 20, 34, 110, 112, b::STONEBRICK);
+    for &tx in &[-19, 19] {
+        let tz = 37;
+        for y in 0..=30 {
+            for dz in -3..=3i32 {
+                for dx in -3..=3i32 {
+                    let r = ((dx * dx + dz * dz) as f32).sqrt();
+                    if r <= 3.4 {
+                        let id = if r > 2.4 {
+                            if y % 7 == 4 && (dx == 0 || dz == 0) { b::WINDOW_LIT } else { b::STONEBRICK }
+                        } else {
+                            b::STONEBRICK
+                        };
+                        w.set(tx + dx, y, tz + dz, id);
+                    }
+                }
+            }
+        }
+        for k in 0..9 {
+            let r = 4.4 - k as f32 * 0.55;
+            for dz in -5..=5i32 {
+                for dx in -5..=5i32 {
+                    if ((dx * dx + dz * dz) as f32).sqrt() <= r {
+                        w.set(tx + dx, 31 + k, tz + dz, b::ROOF);
+                    }
+                }
+            }
+        }
+        w.set_meta(tx, 40, tz, b::PUMPKIN, 5);
+    }
+    // Windows: some glowing, some dark (with matching inner window so moonlight leaks in).
+    for &x in &[-13, -12, -8, -7, 7, 8, 12, 13] {
+        for &y0 in &[4, 11] {
+            let lit = (x + y0) % 3 != 0;
+            w.fill(x, x, y0, y0 + 2, 39, 39, if lit { b::WINDOW_LIT } else { b::WINDOW });
+            if !lit {
+                w.fill(x, x, y0, y0 + 2, 40, 40, b::WINDOW);
+            }
+        }
+    }
+    for z in (44..127).step_by(7) {
+        for &y0 in &[4, 11] {
+            for &x in &[-17, 17] {
+                let lit = rng.chance(0.55);
+                w.fill(x, x, y0, y0 + 2, z, z + 1, if lit { b::WINDOW_LIT } else { b::WINDOW });
+                if !lit {
+                    let ix = if x < 0 { -16 } else { 16 };
+                    w.fill(ix, ix, y0, y0 + 2, z, z + 1, b::WINDOW);
+                }
+            }
+        }
+    }
+    // Porch.
+    w.fill(-6, 6, 8, 8, 34, 38, b::ROOF);
+    for &x in &[-6, 6] {
+        w.fill(x, x, 1, 7, 34, 34, b::LOG);
+    }
+    w.fill(-5, -5, 6, 7, 36, 36, b::FENCE);
+    w.set(-5, 5, 36, b::LANTERN);
+    w.fill(5, 5, 6, 7, 36, 36, b::FENCE);
+    w.set(5, 5, 36, b::LANTERN);
+
+    // ---------------- Foyer
+    w.fill(-3, 3, 0, 0, 41, 69, b::CARPET);
+    for i in 0..8 {
+        let z = 44 + i * 2;
+        w.fill(9, 15, 1, 1 + i, z, z + 1, b::STONEBRICK);
+    }
+    w.fill(9, 15, 9, 9, 60, 69, b::DARKPLANK);
+    w.fill(9, 9, 10, 10, 60, 69, b::FENCE);
+    for &z in &[60, 64, 69] {
+        w.fill(9, 9, 1, 8, z, z, b::LOG);
+    }
+    for &z in &[46, 56, 66] {
+        w.fill(-13, -13, 1, 17, z, z, b::LOG);
+    }
+    // Chandelier.
+    w.fill(2, 2, 13, 17, 55, 55, b::FENCE);
+    for (dx, dz) in [(0, 0), (2, 0), (-2, 0), (0, 2), (0, -2)] {
+        w.set(2 + dx, 12, 55 + dz, b::LANTERN);
+        if dx != 0 || dz != 0 {
+            w.set(2 + dx, 13, 55 + dz, b::FENCE);
+        }
+    }
+    w.fill(0, 4, 14, 14, 55, 55, b::FENCE);
+    w.fill(2, 2, 14, 14, 53, 57, b::FENCE);
+    // Portraits and torches on the walls.
+    for z in (43..69).step_by(4) {
+        w.set(-16, 6, z, if z % 8 == 3 { b::PORTRAIT } else { b::PORTRAIT2 });
+        w.set(-16, 9, z + 2, b::PORTRAIT);
+        if w.is_air(-15, 5, z + 2) {
+            w.set(-15, 5, z + 2, b::TORCH);
+        }
+        if w.is_air(15, 11, z) {
+            w.set(15, 11, z, b::TORCH);
+        }
+    }
+    webs(w, rng, -15, 15, 17, 41, 69);
+
+    // ---------------- Library
+    for z in 72..100 {
+        for &x in &[-15, 15] {
+            if z % 7 == 0 {
+                if w.is_air(x, 5, z) {
+                    w.set(x, 5, z, b::TORCH);
+                }
+                continue;
+            }
+            w.fill(x, x, 1, 11, z, z, b::BOOKSHELF);
+        }
+    }
+    w.fill(-14, 14, 1, 9, 99, 99, b::BOOKSHELF);
+    w.fill(-14, 14, 1, 9, 72, 72, b::BOOKSHELF);
+    for &z in &[77, 83, 89, 95] {
+        w.fill(-12, -6, 1, 4, z, z, b::BOOKSHELF);
+        w.fill(4, 10, 1, 4, z + 2, z + 2, b::BOOKSHELF);
+    }
+    for &(x, z) in &[(-2, 76), (1, 85), (-3, 93), (12, 80), (-10, 86)] {
+        w.fill(x, x + 1, 1, 1, z, z + 1, b::PLANK);
+        w.set(x, 2, z, b::CANDLE);
+        w.set(x + 1, 2, z + 1, b::CANDLE);
+    }
+    for &(x, z) in &[(-6, 79), (6, 87), (-4, 96), (10, 92)] {
+        w.fill(x, x, 14, 17, z, z, b::FENCE);
+        w.set(x, 13, z, b::LANTERN);
+    }
+    webs(w, rng, -14, 14, 17, 72, 99);
+
+    // ---------------- Dining hall
+    w.fill(-13, -6, 0, 0, 103, 128, b::CARPET);
+    w.fill(-11, -8, 1, 1, 105, 125, b::CLOTH);
+    for z in (106..125).step_by(2) {
+        w.set(-12, 1, z, b::DARKPLANK);
+        w.set(-13, 2, z, b::DARKPLANK);
+        w.set(-7, 1, z, b::DARKPLANK);
+        w.set(-6, 2, z, b::DARKPLANK);
+    }
+    for z in (106..125).step_by(3) {
+        w.set(-10, 2, z, b::CANDLE);
+        if z % 2 == 0 {
+            w.set(-9, 2, z + 1, b::CANDLE);
+        }
+    }
+    w.set_meta(-9, 2, 112, b::PUMPKIN, 0);
+    w.set_meta(-10, 2, 121, b::PUMPKIN, 1);
+    // Fireplace.
+    w.fill(13, 15, 1, 8, 110, 118, b::COBBLE);
+    w.fill(13, 14, 1, 4, 112, 116, b::AIR);
+    for z in 112..=116 {
+        w.set(14, 1, z, b::FIRE);
+    }
+    w.fill(12, 12, 9, 9, 110, 118, b::DARKPLANK);
+    w.set(12, 10, 111, b::CANDLE);
+    w.set(12, 10, 117, b::CANDLE);
+    w.set_meta(12, 10, 114, b::PUMPKIN, 1);
+    for &z in &[110, 120] {
+        w.fill(-9, -9, 14, 17, z, z, b::FENCE);
+        for (dx, dz) in [(0, 0), (2, 0), (-2, 0), (0, 2), (0, -2)] {
+            w.set(-9 + dx, 13, z + dz, b::LANTERN);
+        }
+        w.fill(-11, -7, 14, 14, z, z, b::FENCE);
+        w.fill(-9, -9, 14, 14, z - 2, z + 2, b::FENCE);
+    }
+    for z in (104..129).step_by(5) {
+        w.set(-16, 7, z, b::PORTRAIT2);
+        if w.is_air(-15, 5, z + 2) {
+            w.set(-15, 5, z + 2, b::TORCH);
+        }
+        if w.is_air(15, 6, z) && !(108..=120).contains(&z) {
+            w.set(15, 6, z, b::TORCH);
+        }
+    }
+    webs(w, rng, -15, 15, 17, 101, 130);
+}
+
+fn webs(w: &mut World, rng: &mut Rng, x0: i32, x1: i32, y: i32, z0: i32, z1: i32) {
+    for &(x, z) in &[(x0, z0), (x1, z0), (x0, z1), (x1, z1)] {
+        for _ in 0..6 {
+            let (dx, dy, dz) = (rng.int(0, 2), rng.int(0, 2), rng.int(0, 2));
+            let px = if x == x0 { x + dx } else { x - dx };
+            let pz = if z == z0 { z + dz } else { z - dz };
+            if w.is_air(px, y - dy, pz) {
+                w.set(px, y - dy, pz, b::WEB);
+            }
+        }
+    }
+    for _ in 0..10 {
+        let x = rng.int(x0, x1);
+        let z = rng.int(z0, z1);
+        if w.is_air(x, y, z) {
+            w.set(x, y, z, b::WEB);
+        }
+    }
+}
+
+fn crypt(w: &mut World, rng: &mut Rng) {
+    w.room(-14, 14, -18, -6, 140, 176, b::CRYPT, b::MOSSY, b::CRYPT);
+    for z in (146..=170).step_by(8) {
+        for &x in &[-9, 9] {
+            w.fill(x, x, -17, -7, z, z, b::STONEBRICK);
+            w.set(x, -13, z - 1, b::SOUL_TORCH);
+            w.set(x, -13, z + 1, b::SOUL_TORCH);
+        }
+    }
+    for z in (143..174).step_by(6) {
+        for &x in &[-13, 12] {
+            w.fill(x, x + 1, -17, -17, z, z + 2, b::DARKPLANK);
+            w.fill(x, x + 1, -16, -16, z, z + 2, b::DARKPLANK);
+            if rng.chance(0.4) {
+                w.set(x, -15, z + 1, b::CANDLE);
+            }
+        }
+        if w.is_air(-13, -12, z + 4) {
+            w.set(-13, -12, z + 4, b::SOUL_TORCH);
+        }
+        if w.is_air(13, -12, z + 4) {
+            w.set(13, -12, z + 4, b::SOUL_TORCH);
+        }
+    }
+    for _ in 0..40 {
+        let x = rng.int(-13, 13);
+        let z = rng.int(141, 175);
+        if w.is_air(x, -17, z) {
+            w.set(x, -17, z, b::BONES);
+        }
+    }
+    for _ in 0..60 {
+        let x = rng.int(-13, 13);
+        let z = rng.int(141, 175);
+        let y = -7 - rng.int(0, 1);
+        if w.is_air(x, y, z) {
+            w.set(x, y, z, b::WEB);
+        }
+    }
+}
+
+fn lair(w: &mut World, rng: &mut Rng) {
+    w.room(-26, 26, -18, -1, 177, 214, b::PURPLE, b::DIRT, b::PURPLE);
+    w.fill(-25, 25, -18, -18, 178, 213, b::GRASS);
+    // Pumpkin patch.
+    for _ in 0..90 {
+        let x = rng.int(-24, 24);
+        let z = rng.int(179, 212);
+        if x.abs() < 4 && z < 196 {
+            continue;
+        }
+        if w.is_air(x, -17, z) {
+            w.set_meta(x, -17, z, b::PUMPKIN, if z < 196 { 5 } else { rng.int(0, 5) as u8 });
+            if rng.chance(0.3) && w.is_air(x + 1, -17, z) {
+                w.set(x + 1, -17, z, b::HAY);
+            }
+        }
+    }
+    // Amethyst crystal clusters on walls and ceiling.
+    for _ in 0..70 {
+        let (x, y, z) = match rng.int(0, 3) {
+            0 => (-26, rng.int(-16, -3), rng.int(178, 213)),
+            1 => (26, rng.int(-16, -3), rng.int(178, 213)),
+            2 => (rng.int(-25, 25), -1, rng.int(178, 213)),
+            _ => (rng.int(-25, 25), rng.int(-16, -3), 214),
+        };
+        w.set(x, y, z, b::AMETHYST);
+        let (dx, dy, dz) = if x.abs() == 26 {
+            (-x.signum(), 0, 0)
+        } else if y == -1 {
+            (0, -1, 0)
+        } else {
+            (0, 0, -1)
+        };
+        if rng.chance(0.6) {
+            w.set(x + dx, y + dy, z + dz, b::AMETHYST);
+        }
+    }
+    // Pillars with lanterns.
+    for &z in &[184, 197, 210] {
+        for &x in &[-18, 18] {
+            w.fill(x - 1, x + 1, -17, -2, z - 1, z + 1, b::PURPLE);
+            w.set(x - 2, -9, z, b::LANTERN);
+            w.set(x + 2, -9, z, b::LANTERN);
+        }
+    }
+    // The Pumpkin King's throne steps.
+    for k in 0..4 {
+        w.fill(-8 + k, 8 - k, -17, -17 + k, 205 + k * 2, 213, b::PURPLE);
+    }
+    w.set_meta(-6, -13, 212, b::PUMPKIN, 5);
+    w.set_meta(6, -13, 212, b::PUMPKIN, 5);
+}
+
+/// Clears the ride's tunnel along the track (doorways appear wherever it crosses walls).
+fn carve(w: &mut World, track: &Track) {
+    for f in track.samples(0.25) {
+        let right = Vec3::new(f.right.x, 0.0, f.right.z).normalize_or_zero();
+        for ai in -10..=10 {
+            let a = ai as f32 * 0.25;
+            for hi in 0..=9 {
+                let h = hi as f32 * 0.5;
+                let p = f.pos + right * a + Vec3::Y * (h + 0.05);
+                w.set(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32, b::AIR);
+            }
+        }
+    }
+}
+
+fn after_carve(w: &mut World, track: &Track) {
+    // Wooden trestles under elevated track sections.
+    for f in track.samples(2.0) {
+        let (x, z) = (f.pos.x.floor() as i32, f.pos.z.floor() as i32);
+        let mut y = (f.pos.y - 0.05).floor() as i32 - 1;
+        if !w.is_air(x, y, z) {
+            continue;
+        }
+        let mut n = 0;
+        while w.is_air(x, y, z) && n < 14 {
+            w.set(x, y, z, b::LOG);
+            y -= 1;
+            n += 1;
+        }
+    }
+    // Spooky green torches along the drop tunnel.
+    let mut side = 1.0;
+    for f in track.samples(3.0) {
+        if f.pos.z > 127.0 && f.pos.z < 141.0 {
+            let right = Vec3::new(f.right.x, 0.0, f.right.z).normalize_or_zero();
+            let p = f.pos + right * (2.4 * side) + Vec3::Y * 2.2;
+            let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            if w.is_air(x, y, z) {
+                w.set(x, y, z, b::SOUL_TORCH);
+            }
+            side = -side;
+        }
+    }
+}

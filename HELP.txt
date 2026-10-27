@@ -1,0 +1,27 @@
+HAUNTED HOLLOW - a spooky coaster shooter for 1-4 players
+
+USAGE: haunted_hollow [OPTIONS]
+
+  --debug, -d          Mouse debug mode (windowed, debug overlay).
+                       Mouse = player 1, keys 1-4 switch which player the mouse is.
+                       Left click shoots, Enter / right click starts, B skips to the
+                       boss, hold Tab to fast-forward, P pauses, F3 toggles info.
+  --windowed           Run in a window      --fullscreen   Run fullscreen (default)
+  --size WxH           Window size (default 1280x720)
+  --bots N             Add N computer players who play by themselves (attract/demo)
+  --boss               Start right at the boss fight
+  --timescale X        Run the simulation X times faster
+
+Wii Remote calibration (sensor bar):
+  --wii-flip-x         Invert horizontal pointing
+  --wii-flip-y         Invert vertical pointing
+  --wii-gain G         Pointer sensitivity (default 1.35)
+  --wii-y-offset O     Shift pointer vertically (e.g. -0.1 if the bar is below the TV)
+
+Testing:
+  --shots T1,T2,...    Save screenshots (PPM) at these simulation times (seconds)
+  --shot-dir DIR       Where to save screenshots
+  --exit-after S       Quit after S seconds of simulation time
+
+Wii Remote buttons:  B (trigger) or A = shoot / join,  + = start,
+                     HOME = pause,  - (while paused) = back to the title screen
