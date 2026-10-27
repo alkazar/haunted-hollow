@@ -2,6 +2,8 @@
 //! Rust + Vulkan (ash) + winit, Linux.
 
 mod atlas;
+mod audio;
+mod synth;
 mod game;
 mod hud;
 mod mesh;
@@ -33,6 +35,8 @@ struct Args {
     size: (u32, u32),
     ir: wiimote::IrConfig,
     boss: bool,
+    mute: bool,
+    dump_audio: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -47,6 +51,8 @@ fn parse_args() -> Args {
         size: (1280, 720),
         ir: wiimote::IrConfig { flip_x: true, flip_y: false, gain: 1.35, y_offset: 0.0 },
         boss: false,
+        mute: false,
+        dump_audio: None,
     };
     let mut windowed = false;
     let mut full = false;
@@ -67,6 +73,8 @@ fn parse_args() -> Args {
             "--shot-dir" => a.shot_dir = val(&mut i),
             "--exit-after" => a.exit_after = val(&mut i).parse().ok(),
             "--boss" => a.boss = true,
+            "--mute" => a.mute = true,
+            "--dump-audio" => a.dump_audio = Some(val(&mut i)),
             "--size" => {
                 let v = val(&mut i);
                 if let Some((w, h)) = v.split_once('x') {
@@ -96,6 +104,7 @@ struct App {
     window: Option<Window>,
     renderer: Option<vk::Renderer>,
     wii: wiimote::WiimoteManager,
+    audio: audio::Audio,
     last: Instant,
     mouse: Vec2,
     mouse_in: bool,
@@ -230,8 +239,13 @@ impl App {
             };
             first = false;
             self.game.update(step, &inp, screen, mouse_slot);
+            for e in self.game.sounds.drain(..) {
+                self.audio.play(e);
+            }
             self.sim_time += step;
         }
+        self.audio.music(self.game.music());
+        self.audio.cart(self.game.cart_noise());
         for (src, ms) in self.game.rumble_requests.drain(..) {
             if let SourceId::Wii(id) = src {
                 self.wii.rumble(id, ms);
@@ -277,10 +291,11 @@ impl App {
         if let Some(t) = self.args.exit_after {
             if self.sim_time >= t {
                 eprintln!(
-                    "exit after {:.1}s sim time: state {:?}, ride {:.1}s, scores {:?}",
+                    "exit after {:.1}s sim time: state {:?}, ride {:.1}s, spawned/skipped {:?}, scores {:?}",
                     self.sim_time,
                     self.game.state,
                     self.game.ride_t,
+                    self.game.spawn_stats,
                     self.game.players.iter().filter(|p| p.joined).map(|p| p.score).collect::<Vec<_>>()
                 );
                 el.exit();
@@ -404,6 +419,14 @@ impl ApplicationHandler for App {
 
 fn main() {
     let args = parse_args();
+    if let Some(dir) = &args.dump_audio {
+        let bank = audio::Bank::build();
+        match bank.dump(dir) {
+            Ok(()) => eprintln!("wrote music and sound effects to {dir}"),
+            Err(e) => eprintln!("could not write audio: {e}"),
+        }
+        return;
+    }
     let t0 = Instant::now();
     let track = track::Track::new();
     let world = world::generate(&track);
@@ -421,6 +444,7 @@ fn main() {
     }
     let wii = wiimote::WiimoteManager::start(args.ir.clone());
 
+    let audio = if args.mute { audio::Audio::silent() } else { audio::Audio::start() };
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
@@ -430,6 +454,7 @@ fn main() {
         window: None,
         renderer: None,
         wii,
+        audio,
         last: Instant::now(),
         mouse: Vec2::ZERO,
         mouse_in: false,

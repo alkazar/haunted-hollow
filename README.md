@@ -17,6 +17,14 @@ award on the results screen ("GHOST CATCHER", "BAT BOPPER", "BOSS BUSTER"...).
 * Rust + Vulkan (ash) + winit, Minecraft-style voxel world with procedural 16×16 textures,
   coloured flood-fill block lighting, smooth lighting/ambient occlusion and a cart lantern.
   No asset files: all textures, models and the world are generated in code.
+* Music and sound: original tunes (spooky theremin title, skeleton-xylophone ride theme,
+  brassy boss battle, victory fanfare, happy results theme) and ~20 effects, all synthesized in
+  code at start-up. Sound goes out through ALSA, loaded at runtime (works with PipeWire /
+  PulseAudio via their ALSA bridge). `--mute` turns it off, `HAUNTED_ALSA_DEVICE=hw:1,0`
+  picks a different device, and `--dump-audio DIR` writes every track and effect as WAV files.
+* Targets are only spawned where every rider can see and reach them: each candidate spot is
+  checked against the cart's predicted camera over the target's whole life (on screen, not
+  behind the cart or HUD, not blocked by walls).
 
 ## Build & run
 
@@ -99,6 +107,8 @@ Other handy flags: `--bots N` (computer players, an attract/demo mode), `--boss`
 | `src/track.rs` | Coaster spline, speed profile normalised to a 120 s ride, banking |
 | `src/mesh.rs` | Voxel models: ghost, bat, pumpkin, skeleton, spider, books, candy, Pumpkin King, cart |
 | `src/game.rs` | Spawning, behaviours, hit testing, scoring, boss, title/results screens |
+| `src/synth.rs` | Tiny synthesizer: instruments, drums, the songs and every sound effect |
+| `src/audio.rs` | Real-time mixer thread, crossfading music, ALSA output via dlopen |
 | `src/wiimote.rs` | evdev Wii Remote reader: buttons, IR pointer, rumble, LEDs, hot-plug |
 | `src/main.rs` | Window, input, game loop, command-line flags |
 

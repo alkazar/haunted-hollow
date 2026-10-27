@@ -552,6 +552,7 @@ dependencies = [
  "evdev",
  "font8x8",
  "glam",
+ "libloading",
  "naga",
  "raw-window-handle",
  "winit",

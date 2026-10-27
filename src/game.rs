@@ -2,6 +2,7 @@
 //! No one can lose: targets just pop into candy and every player earns a score.
 
 use crate::atlas::*;
+use crate::audio::{Music, Sfx, SoundEvent};
 use crate::hud::{Align, Ui};
 use crate::mesh::{push_box, Models};
 use crate::rng::Rng;
@@ -200,6 +201,11 @@ pub struct FrameOut {
 }
 
 pub struct Game {
+    pub sounds: Vec<SoundEvent>,
+    last_spawn_sound: [f32; 8],
+    pub spawn_stats: (u32, u32),
+    cam_dir: Vec3,
+    cam_up: Vec3,
     pub state: State,
     pub players: [Player; 4],
     state_t: f32,
@@ -298,6 +304,11 @@ impl Game {
             fps: 0.0,
             debug_lines: vec![],
             shake: 0.0,
+            sounds: vec![],
+            last_spawn_sound: [-9.0; 8],
+            spawn_stats: (0, 0),
+            cam_dir: Vec3::Z,
+            cam_up: Vec3::Y,
         };
         for k in 0..bots.min(4) {
             g.players[k as usize].joined = true;
@@ -415,111 +426,260 @@ impl Game {
         None
     }
 
+    /// Camera pose (eye, look direction, up) for the cart at track distance `d`.
+    fn pose_at(&self, d: f32, speed: f32) -> (Vec3, Vec3, Vec3) {
+        let f = self.track.frame_at(d);
+        let ahead = self.track.pos_at(d + 4.0);
+        let mut dir = (ahead - f.pos).normalize_or_zero().lerp(f.fwd, 0.4).normalize_or_zero();
+        if dir == Vec3::ZERO {
+            dir = Vec3::Z;
+        }
+        let eye = f.pos + Vec3::Y * 1.65;
+        let roll = (self.track.turn_rate(d) * speed * 0.22).clamp(-0.3, 0.3);
+        let right = dir.cross(Vec3::Y).normalize_or_zero();
+        let up0 = right.cross(dir).normalize_or_zero();
+        let up = (up0 * roll.cos() + right * roll.sin()).normalize();
+        (eye, dir, up)
+    }
+
+    fn proj(&self) -> Mat4 {
+        let aspect = self.screen.x / self.screen.y.max(1.0);
+        Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 800.0)
+    }
+
+    /// Predicted camera `ahead` seconds from now (used to place targets in view).
+    fn view_ahead(&self, ahead: f32) -> (Vec3, Mat4) {
+        let (eye, dir, up) = if self.state == State::Ride && self.ride_t + ahead < RIDE_SECONDS {
+            let t = self.ride_t + ahead;
+            let d = self.track.dist_at_time(t);
+            let speed = (self.track.dist_at_time(t + 0.1) - d) * 10.0;
+            self.pose_at(d, speed)
+        } else {
+            let (eye, dir, up) = self.pose_at(self.track.stop_dist, 0.0);
+            let boss = self.boss.as_ref().map(|b| b.pos).unwrap_or(Vec3::new(0.0, -9.5, 200.0));
+            let to = (Vec3::new(boss.x * 0.5, -9.5, boss.z) - eye).normalize_or_zero();
+            (eye, dir.lerp(to, 0.3).normalize(), up)
+        };
+        (eye, self.proj() * Mat4::look_to_rh(eye, dir, up))
+    }
+
+    /// True if no solid block lies between the two points.
+    fn clear_line(&self, a: Vec3, b: Vec3) -> bool {
+        let len = a.distance(b);
+        let dir = (b - a) / len.max(1e-3);
+        let mut t = 0.4;
+        while t < len - 0.6 {
+            if self.world.solid_at(a + dir * t) {
+                return false;
+            }
+            t += 0.3;
+        }
+        true
+    }
+
+    /// Is the point comfortably on screen (not hidden behind the cart or HUD) and unobstructed?
+    fn shootable_from(&self, eye: Vec3, vp: &Mat4, p: Vec3) -> bool {
+        let c = *vp * p.extend(1.0);
+        if c.w < 3.0 || c.w > 38.0 {
+            return false;
+        }
+        let n = c.xyz() / c.w;
+        n.x.abs() < 0.8 && n.y > -0.42 && n.y < 0.78 && self.clear_line(eye, p)
+    }
+
+    /// Where a target is at a given age (ignoring appear/leave animation).
+    fn motion(t: &Target, a: f32) -> Vec3 {
+        let ph = t.phase;
+        match t.kind {
+            Kind::Ghost => t.home + Vec3::new((a * 1.3 + ph).sin() * 0.6, (a * 2.1 + ph).sin() * 0.35, 0.0),
+            Kind::Pumpkin => t.home + Vec3::Y * ((a * 3.0 + ph).sin() * 0.06),
+            Kind::Skeleton => t.home,
+            Kind::Spider => t.home + Vec3::Y * (a * 2.0).sin() * 0.12,
+            Kind::Book => t.home + Vec3::new((a * 1.6 + ph).cos() * 0.9, (a * 3.0).sin() * 0.3, (a * 1.6 + ph).sin() * 0.9),
+            Kind::Bat => t.a.lerp(t.b, (a / t.life).min(1.0)) + Vec3::Y * (a * 5.0 + ph).sin() * 0.4,
+            Kind::Candy => t.a.lerp(t.b, (a / t.life).min(1.0)) + Vec3::Y * (a * 6.0).sin() * 0.3,
+        }
+    }
+
+    /// Picks a spot for a new target that every player can actually see and shoot for
+    /// (nearly) its whole life: candidates are tested against the predicted camera.
     fn spawn_target(&mut self, kind: Kind, seed: u64, side_sign: f32, near: Option<Vec3>) {
         let mut rng = Rng::new(seed);
-        let mut lead = rng.range(2.3, 3.3);
-        // Flyers cross the track further ahead so they never zoom through the cart.
-        match kind {
-            Kind::Bat => lead += 2.2,
-            Kind::Candy => lead += 1.0,
-            _ => {}
+        let mut best: Option<(u32, Target)> = None;
+        for attempt in 0..48 {
+            let kind = if attempt >= 32 && matches!(kind, Kind::Pumpkin | Kind::Skeleton) { Kind::Ghost } else { kind };
+            let Some(t) = self.candidate(kind, &mut rng, if attempt % 2 == 0 { side_sign } else { -side_sign }, near) else {
+                continue;
+            };
+            let samples = [0.35, t.life * 0.35, t.life * 0.7, t.life - 0.05];
+            let mut score = 0;
+            for &age in &samples {
+                let (eye, vp) = self.view_ahead(age);
+                if self.shootable_from(eye, &vp, Self::motion(&t, age)) {
+                    score += 1;
+                }
+            }
+            if score == samples.len() as u32 {
+                best = Some((score, t));
+                break;
+            }
+            if best.as_ref().map_or(true, |b| score > b.0) {
+                best = Some((score, t));
+            }
         }
-        let d = if let Some(_) = near {
+        match best {
+            Some((score, t)) if score >= 3 => {
+                self.spawn_sound(t.kind, t.home);
+                self.targets.push(t);
+                self.spawn_stats.0 += 1;
+            }
+            _ => self.spawn_stats.1 += 1,
+        }
+    }
+
+    fn candidate(&self, kind: Kind, rng: &mut Rng, side_sign: f32, near: Option<Vec3>) -> Option<Target> {
+        let life = match kind {
+            Kind::Skeleton => rng.range(3.6, 4.6),
+            Kind::Bat => rng.range(3.4, 4.4),
+            Kind::Candy => 2.8,
+            _ => rng.range(4.4, 5.8),
+        };
+        let lead = match kind {
+            Kind::Bat => rng.range(3.5, 7.0),
+            Kind::Candy => rng.range(3.0, 6.0),
+            _ => rng.range(2.4, 6.5),
+        };
+        let d = if near.is_some() {
             self.track.stop_dist
-        } else if self.ride_t + lead > RIDE_SECONDS {
-            self.track.stop_dist + rng.range(6.0, 12.0)
+        } else if self.ride_t + lead > RIDE_SECONDS - 0.5 {
+            self.track.stop_dist + rng.range(6.0, 14.0)
         } else {
             self.track.dist_at_time(self.ride_t + lead)
         };
         let f = self.track.frame_at(d);
         let right = Vec3::new(f.right.x, 0.0, f.right.z).normalize_or_zero();
         let fwd = Vec3::new(f.fwd.x, 0.0, f.fwd.z).normalize_or_zero();
-        let mut side = side_sign * rng.range(2.1, 4.8);
-        let fo = rng.range(-1.0, 2.5);
+        let side = side_sign * rng.range(0.3, 4.2);
+        let fo = rng.range(-0.5, 3.0);
         let mut base = f.pos + right * side + fwd * fo;
+        let ty = f.pos.y;
         if let Some(c) = near {
-            base = c + Vec3::new(rng.range(-7.0, 7.0), rng.range(-3.0, 2.0), rng.range(-6.0, -2.0));
+            base = c + Vec3::new(rng.range(-8.0, 8.0), rng.range(-4.0, 1.5), rng.range(-7.0, -3.0));
         }
-        // Keep out of walls: slide toward the track until we find air.
-        for _ in 0..10 {
-            let test = base + Vec3::Y * 1.5;
-            if !self.world.solid_at(test) && !self.world.solid_at(base + Vec3::Y * 0.6) {
-                break;
-            }
-            side *= 0.75;
-            base = f.pos + right * side + fwd * fo;
-        }
-        let floor = self.floor_below(base + Vec3::Y * 1.0);
-        let phase = rng.range(0.0, 6.28);
-        let variant = rng.int(0, 2) as usize;
+        let floor = self.floor_below(base + Vec3::Y * 2.5);
         let mut t = Target {
             kind,
             home: base,
             a: base,
             b: base,
             age: 0.0,
-            life: rng.range(4.5, 6.0),
+            life,
             leave: 0.0,
-            phase,
-            variant,
+            phase: rng.range(0.0, 6.28),
+            variant: rng.int(0, 2) as usize,
             pos: base,
             scale: 0.0,
             dead: false,
         };
+        let over_track = side.abs() < 1.5 && near.is_none();
         match kind {
-            Kind::Ghost => {
-                t.home.y = floor + rng.range(1.6, 3.6);
+            Kind::Pumpkin | Kind::Skeleton => {
                 if near.is_some() {
                     t.home.y = base.y;
+                } else {
+                    if floor < ty - 1.2 || floor > ty + 1.5 || over_track {
+                        return None;
+                    }
+                    t.home.y = floor + if kind == Kind::Pumpkin { 0.56 } else { 0.95 };
                 }
             }
-            Kind::Pumpkin => {
-                t.home.y = floor + 0.56;
-                if near.is_some() {
-                    t.home.y = base.y;
-                }
-            }
-            Kind::Skeleton => {
-                t.home.y = floor + 0.95;
-                t.life = rng.range(3.5, 4.5);
-            }
-            Kind::Book => {
-                t.home.y = floor + rng.range(2.0, 4.0);
+            Kind::Ghost | Kind::Book => {
+                let lo = if over_track { 2.8 } else { 1.0 };
+                t.home.y = if near.is_some() { base.y } else { ty + rng.range(lo, 3.6) };
             }
             Kind::Spider => {
-                let ceil = self.ceiling_above(base + Vec3::Y).unwrap_or(base.y + 7.0);
+                let hang = ty + rng.range(if over_track { 2.8 } else { 1.3 }, 3.4);
+                t.home.y = hang;
+                let ceil = self.ceiling_above(Vec3::new(base.x, hang, base.z)).unwrap_or(hang + 6.0);
                 t.a = Vec3::new(base.x, ceil, base.z);
-                t.home.y = (floor + rng.range(1.4, 3.0)).min(ceil - 1.0);
             }
             Kind::Bat | Kind::Candy => {
-                let h = if kind == Kind::Bat { rng.range(2.0, 4.2) } else { rng.range(1.6, 3.0) };
-                let y = (floor + h).max(f.pos.y + 1.2);
-                let span = if kind == Kind::Bat { 7.0 } else { 9.0 };
+                let y = if near.is_some() { base.y } else { ty + rng.range(if kind == Kind::Bat { 2.0 } else { 1.5 }, 3.8) };
+                let span = rng.range(3.0, 5.0);
                 let s = side_sign;
-                t.a = f.pos + right * (s * span) + fwd * fo + Vec3::Y * (y - f.pos.y);
-                t.b = f.pos - right * (s * span) + fwd * (fo + rng.range(-2.0, 2.0)) + Vec3::Y * (y - f.pos.y + rng.range(-0.5, 1.0));
-                if let Some(c) = near {
-                    t.a = c + Vec3::new(s * 9.0, rng.range(-2.0, 3.0), rng.range(-6.0, -3.0));
-                    t.b = c + Vec3::new(-s * 9.0, rng.range(-2.0, 3.0), rng.range(-6.0, -3.0));
+                let mid = Vec3::new(base.x, y, base.z) - right * side * 0.6;
+                t.a = mid + right * (s * span);
+                t.b = mid - right * (s * span) + fwd * rng.range(-1.0, 1.0) + Vec3::Y * rng.range(-0.6, 0.8);
+                t.home = mid;
+                if self.world.solid_at(t.a) || self.world.solid_at(t.b) {
+                    return None;
                 }
-                // Clamp the flight path to the inside of the room.
-                for _ in 0..8 {
-                    if !self.world.solid_at(t.a) {
-                        break;
-                    }
-                    t.a = t.a.lerp(f.pos + Vec3::Y * (y - f.pos.y), 0.25);
-                }
-                for _ in 0..8 {
-                    if !self.world.solid_at(t.b) {
-                        break;
-                    }
-                    t.b = t.b.lerp(f.pos + Vec3::Y * (y - f.pos.y), 0.25);
-                }
-                t.life = if kind == Kind::Bat { rng.range(3.6, 4.6) } else { 2.8 };
-                t.pos = t.a;
             }
         }
-        self.targets.push(t);
+        // Must float in open air, above the floor.
+        for age in [0.0, t.life * 0.5, t.life] {
+            let p = Self::motion(&t, age);
+            if self.world.solid_at(p) || self.world.solid_at(p + Vec3::Y * 0.5) || self.world.solid_at(p - Vec3::Y * 0.4) {
+                return None;
+            }
+        }
+        t.pos = Self::motion(&t, 0.0);
+        Some(t)
+    }
+
+    fn spawn_sound(&mut self, kind: Kind, at: Vec3) {
+        let (sfx, vol) = match kind {
+            Kind::Ghost => (Sfx::Ghost, 0.35),
+            Kind::Bat => (Sfx::Squeak, 0.3),
+            Kind::Skeleton => (Sfx::Rattle, 0.45),
+            Kind::Spider => (Sfx::Zip, 0.3),
+            Kind::Book => (Sfx::Flutter, 0.4),
+            Kind::Pumpkin => (Sfx::Boing, 0.35),
+            Kind::Candy => (Sfx::Bonus, 0.25),
+        };
+        let k = kind.index();
+        if self.total_t - self.last_spawn_sound[k] < 1.2 {
+            return;
+        }
+        self.last_spawn_sound[k] = self.total_t;
+        let pan = self.pan_of(at);
+        self.sfx(sfx, vol, pan, 0.9 + (self.total_t * 7.3).fract() * 0.2);
+    }
+
+    pub fn sfx(&mut self, sfx: Sfx, vol: f32, pan: f32, pitch: f32) {
+        self.sounds.push(SoundEvent { sfx, vol, pan, pitch });
+    }
+
+    fn pan_of(&self, p: Vec3) -> f32 {
+        let c = self.viewproj * p.extend(1.0);
+        if c.w <= 0.1 {
+            0.0
+        } else {
+            (c.x / c.w).clamp(-1.0, 1.0) * 0.8
+        }
+    }
+
+    /// Which music should be playing right now.
+    pub fn music(&self) -> Option<Music> {
+        Some(match self.state {
+            State::Title => Music::Title,
+            State::Ride => Music::Ride,
+            State::Boss => Music::Boss,
+            State::Victory | State::Outro => Music::Victory,
+            State::Results => Music::Results,
+        })
+    }
+
+    /// 0..1 loudness of the cart's rattle.
+    pub fn cart_noise(&self) -> f32 {
+        match self.state {
+            State::Ride if !self.paused => {
+                let d = self.track.dist_at_time(self.ride_t);
+                ((self.track.dist_at_time(self.ride_t + 0.1) - d) * 10.0 / 6.0).clamp(0.0, 1.0)
+            }
+            State::Outro => 0.6,
+            _ => 0.0,
+        }
     }
 
     // ================================================================= update
@@ -562,7 +722,15 @@ impl Game {
                 }
             }
             State::Ride => {
+                let before = self.ride_t;
                 self.ride_t += dt;
+                // Countdown beeps.
+                for k in 0..4 {
+                    let at = k as f32;
+                    if before < at + 0.001 && self.ride_t >= at + 0.001 && before > 0.0 || (k == 0 && before == 0.0) {
+                        self.sfx(if k == 3 { Sfx::Go } else { Sfx::Beep }, 0.6, 0.0, 1.0);
+                    }
+                }
                 while self.next_spawn < self.spawns.len() && self.spawns[self.next_spawn].t <= self.ride_t {
                     let s = &self.spawns[self.next_spawn];
                     let (k, seed, side) = (s.kind, s.seed, s.side);
@@ -589,6 +757,8 @@ impl Game {
                     });
                     self.banner = ("THE PUMPKIN KING!".into(), 0.0);
                     self.shake = 0.6;
+                    self.sfx(Sfx::Rumble, 0.8, 0.0, 1.0);
+                    self.sfx(Sfx::Laugh, 0.9, 0.0, 1.0);
                 }
             }
             State::Boss => self.update_boss(dt),
@@ -605,6 +775,14 @@ impl Game {
                 }
             }
             State::Results => {
+                // A "ding" as each row of the scoreboard appears.
+                let rows = self.joined_count();
+                for rank in 0..rows {
+                    let at = 0.4 * (rows - rank) as f32;
+                    if self.state_t - dt < at && self.state_t >= at {
+                        self.sfx(Sfx::Ding, 0.5, 0.0, 1.0 + 0.12 * (rows - rank) as f32);
+                    }
+                }
                 let go = inputs.iter().any(|i| i.join || i.start || i.fire_pressed);
                 if (go && self.state_t > 4.0) || self.state_t > 45.0 || (self.bots > 0 && self.state_t > 6.0) {
                     self.state = State::Title;
@@ -622,26 +800,17 @@ impl Game {
             }
             let appear = smooth(t.age / 0.35) * (1.0 - smooth(t.leave / 0.4));
             t.scale = appear;
-            let a = t.age;
-            let ph = t.phase;
-            t.pos = match t.kind {
-                Kind::Ghost => t.home + Vec3::new((a * 1.3 + ph).sin() * 0.6, (a * 2.1 + ph).sin() * 0.35, 0.0),
-                Kind::Pumpkin => t.home - Vec3::Y * (1.0 - appear) * 0.9 + Vec3::Y * ((a * 3.0 + ph).sin() * 0.06),
-                Kind::Skeleton => t.home - Vec3::Y * (1.0 - appear) * 1.7,
+            let mut pos = Self::motion(t, t.age);
+            match t.kind {
+                Kind::Pumpkin => pos -= Vec3::Y * (1.0 - appear) * 0.9,
+                Kind::Skeleton => pos -= Vec3::Y * (1.0 - appear) * 1.7,
                 Kind::Spider => {
                     let top = t.a.y - 0.4;
-                    Vec3::new(t.home.x, top + (t.home.y - top) * appear + (a * 2.0).sin() * 0.12, t.home.z)
+                    pos.y = top + (pos.y - top) * appear;
                 }
-                Kind::Book => t.home + Vec3::new((a * 1.6 + ph).cos() * 1.1, (a * 3.0).sin() * 0.3, (a * 1.6 + ph).sin() * 1.1),
-                Kind::Bat => {
-                    let u = (a / t.life).min(1.0);
-                    t.a.lerp(t.b, u) + Vec3::Y * (a * 5.0 + ph).sin() * 0.45
-                }
-                Kind::Candy => {
-                    let u = (a / t.life).min(1.0);
-                    t.a.lerp(t.b, u) + Vec3::Y * (a * 6.0).sin() * 0.3
-                }
-            };
+                _ => {}
+            }
+            t.pos = pos;
             if matches!(t.kind, Kind::Bat | Kind::Candy) {
                 t.scale = smooth(t.age / 0.25);
                 if t.age >= t.life {
@@ -653,8 +822,7 @@ impl Game {
             // Gone behind the cart.
             let to = t.pos - self.cam;
             if self.state == State::Ride && to.length() > 3.0 {
-                let fwd = self.track.frame_at(self.track.dist_at_time(self.ride_t)).fwd;
-                if to.dot(fwd) < -3.0 {
+                if to.dot(self.cam_dir) < -1.0 {
                     t.dead = true;
                 }
             }
@@ -703,6 +871,7 @@ impl Game {
             }
             if !p.joined && inputs.iter().any(|i| i.id == SourceId::Mouse && (i.join || i.fire_pressed)) {
                 p.joined = true;
+                self.sfx(Sfx::Join, 0.6, 0.0, 1.0 + slot as f32 * 0.1);
             }
         }
         for inp in inputs {
@@ -712,7 +881,9 @@ impl Game {
                     let p = &mut self.players[s];
                     if !p.joined && (inp.join || inp.fire_pressed) {
                         p.joined = true;
+                        self.sounds.push(SoundEvent { sfx: Sfx::Join, vol: 0.6, pan: 0.0, pitch: 1.0 + s as f32 * 0.1 });
                     }
+                    let p = &mut self.players[s];
                     if let Some(a) = inp.aim {
                         p.aim_target = a;
                         if !p.aim_visible {
@@ -734,6 +905,7 @@ impl Game {
                             p.reset_score();
                             self.led_requests.push((inp.id, free));
                             self.rumble_requests.push((inp.id, 200));
+                            self.sfx(Sfx::Join, 0.6, 0.0, 1.0 + free as f32 * 0.1);
                         }
                     }
                 }
@@ -783,7 +955,6 @@ impl Game {
     }
 
     fn update_camera(&mut self, dt: f32) {
-        let _ = dt;
         let (d, speed) = match self.state {
             State::Title => (0.0, 0.0),
             State::Ride => {
@@ -798,25 +969,19 @@ impl Game {
             State::Results => (self.track.stop_dist + 20.0, 0.0),
         };
         let f = self.track.frame_at(d);
-        let ahead = self.track.pos_at(d + 4.0);
-        let mut dir = (ahead - f.pos).normalize_or_zero().lerp(f.fwd, 0.4).normalize_or_zero();
-        if dir == Vec3::ZERO {
-            dir = Vec3::Z;
-        }
-        let mut eye = f.pos + Vec3::Y * 1.65;
+        let (mut eye, mut dir, mut up) = self.pose_at(d, speed);
         if self.state == State::Title {
             let s = self.state_t * 0.25;
             dir = Vec3::new(s.sin() * 0.25, 0.08 + (s * 0.7).sin() * 0.03, 1.0).normalize();
             eye = f.pos + Vec3::Y * 1.9;
+            up = Vec3::Y;
         }
         if let (Some(b), true) = (&self.boss, matches!(self.state, State::Boss | State::Victory)) {
             let to = (b.pos - eye).normalize_or_zero();
             dir = dir.lerp(to, 0.3).normalize();
         }
-        let roll = (self.track.turn_rate(d) * speed * 0.22).clamp(-0.3, 0.3);
-        let right = dir.cross(Vec3::Y).normalize_or_zero();
-        let up0 = right.cross(dir).normalize_or_zero();
-        let up = (up0 * roll.cos() + right * roll.sin()).normalize();
+        self.cam_dir = dir;
+        self.cam_up = up;
         if self.shake > 0.0 {
             let k = self.shake * 0.12;
             eye += Vec3::new((self.total_t * 53.0).sin() * k, (self.total_t * 61.0).cos() * k, 0.0);
@@ -827,15 +992,18 @@ impl Game {
         }
         self.cam = eye;
         let view = Mat4::look_to_rh(eye, dir, up);
-        let aspect = self.screen.x / self.screen.y.max(1.0);
-        let proj = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 800.0);
-        self.viewproj = proj * view;
+        self.viewproj = self.proj() * view;
 
         // Zone banners and fog transitions.
         let z = zone_at(f.pos);
         if z != self.zone && self.state == State::Ride {
             self.zone = z;
             self.banner = (zone_name(z).into(), 0.0);
+            if z == Zone::Drop {
+                self.sfx(Sfx::Wheee, 0.6, 0.0, 1.0);
+            } else {
+                self.sfx(Sfx::Whoosh, 0.5, 0.0, 1.0);
+            }
         }
         if self.state == State::Title {
             self.zone = Zone::Graveyard;
@@ -902,6 +1070,8 @@ impl Game {
             p.shots += 1;
             p.kick = 1.0;
             let aim = p.aim;
+            let pan = (aim.x / self.screen.x * 2.0 - 1.0) * 0.8;
+            self.sfx(Sfx::Shot, 0.18, pan, 1.0 + i as f32 * 0.07);
             self.shoot(i, aim);
         }
     }
@@ -943,6 +1113,13 @@ impl Game {
             p.counts[t.kind.index()] += 1;
             self.popups.push(Popup { pos: t.pos + Vec3::Y * 0.5, text: format!("+{pts}"), color, age: 0.0, big: t.kind == Kind::Candy });
             self.burst(t.pos, if t.kind == Kind::Candy { 40 } else { 22 }, color, t.kind == Kind::Ghost);
+            let pan = (aim.x / self.screen.x * 2.0 - 1.0) * 0.8;
+            self.sfx(Sfx::Pop, 0.7, pan, 0.9 + pi as f32 * 0.12);
+            match t.kind {
+                Kind::Candy => self.sfx(Sfx::Bonus, 0.7, pan, 1.0),
+                Kind::Ghost => self.sfx(Sfx::Poof, 0.5, pan, 1.0),
+                _ => {}
+            }
             if let Some(src) = self.players[pi].source {
                 self.rumble_requests.push((src, 80));
             }
@@ -1034,6 +1211,7 @@ impl Game {
             b.taunt = 5.5;
             let lines = ["MWAHAHA!", "TRICK OR TREAT!", "YOU CAN'T CATCH ME!", "OOH, THAT TICKLES!", "BOO!"];
             b.taunt_text = lines[(b.t as usize / 5) % lines.len()];
+            self.sounds.push(SoundEvent { sfx: Sfx::Laugh, vol: 0.7, pan: 0.0, pitch: 0.95 + (b.t * 0.37).fract() * 0.15 });
         }
         // Summon helpers at 75%, 50% and 25% health (extra points for everyone).
         let thresholds = [0.75, 0.5, 0.25];
@@ -1042,6 +1220,7 @@ impl Game {
             b.summons_done += 1;
             b.taunt = 3.0;
             b.taunt_text = "GET THEM, MY BATS!";
+            self.sounds.push(SoundEvent { sfx: Sfx::Laugh, vol: 0.8, pan: 0.0, pitch: 1.1 });
             summon = true;
         }
         let pos = b.pos;
@@ -1073,6 +1252,10 @@ impl Game {
         p.hits += 1;
         p.counts[7] += 1;
         let pts = if final_hit { 1000 } else { 25 };
+        self.sounds.push(SoundEvent { sfx: Sfx::Bonk, vol: 0.55, pan: 0.0, pitch: 0.9 + pi as f32 * 0.1 + (1.0 - b.hp / b.max_hp) * 0.3 });
+        if final_hit {
+            self.sounds.push(SoundEvent { sfx: Sfx::Boom, vol: 1.0, pan: 0.0, pitch: 1.0 });
+        }
         p.score += pts;
         self.popups.push(Popup {
             pos: pos + Vec3::new(self.rng.range(-2.0, 2.0), self.rng.range(0.0, 3.0), -3.0),
@@ -1116,19 +1299,27 @@ impl Game {
 
     pub fn draw_world(&self, out: &mut Vec<Vertex>) {
         let m = &self.models;
-        // The cart in front of the riders.
-        let d = match self.state {
-            State::Title => 0.0,
-            State::Ride => self.track.dist_at_time(self.ride_t),
-            State::Boss | State::Victory => self.track.stop_dist,
-            State::Outro => self.track.stop_dist + 0.9 * self.state_t * self.state_t,
-            State::Results => self.track.stop_dist + 20.0,
-        };
-        let f = self.track.frame_at(d);
-        let basis = Mat4::from_cols(f.right.extend(0.0), f.up.extend(0.0), f.fwd.extend(0.0), Vec3::ZERO.extend(1.0));
-        let cart_m = Mat4::from_translation(f.pos + f.up * 0.3 + f.fwd * 1.7) * basis;
-        let light = self.world.light_at(f.pos + Vec3::Y * 1.0);
-        m.cart.draw(out, &cart_m, light.max(Vec3::splat(0.25)), 0.0, None);
+        // The riders' cart, fixed to the camera so it always frames the bottom of the screen.
+        if !matches!(self.state, State::Results) {
+            let dir = self.cam_dir;
+            let right = dir.cross(self.cam_up).normalize_or_zero();
+            let up = right.cross(dir).normalize_or_zero();
+            let basis = Mat4::from_cols(right.extend(0.0), up.extend(0.0), dir.extend(0.0), Vec3::ZERO.extend(1.0));
+            let origin = self.cam - up * 1.55 + dir * 0.35;
+            let cart_m = Mat4::from_translation(origin) * basis;
+            let light = self.world.light_at(self.cam).max(Vec3::splat(0.3));
+            m.cart.draw(out, &cart_m, light, 0.0, None);
+            // A little dashboard lamp for each player, lit in their colour once they join.
+            for (i, p) in self.players.iter().enumerate() {
+                let c = PLAYER_COLORS[i];
+                let lit = p.joined;
+                let col = if lit { c } else { [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25] };
+                let pulse = if lit && p.kick > 0.0 { 1.0 + p.kick * 0.4 } else { 1.0 };
+                let pos = origin + right * ((i as f32 - 1.5) * 0.42) + up * 1.12 + dir * 0.86;
+                let lm = Mat4::from_translation(pos) * basis * Mat4::from_scale(Vec3::splat(0.12 * pulse));
+                push_box(out, &lm, T_WHITE, col, light, if lit { 1.0 } else { 0.3 });
+            }
+        }
 
         for t in &self.targets {
             let s = t.scale.max(0.001);
@@ -1185,16 +1376,30 @@ impl Game {
                     push_box(out, &thread, T_WHITE, [0.85, 0.85, 0.9], light, 0.5);
                     let body = base * Mat4::from_translation(-Vec3::Y * 0.22);
                     m.spider.draw(out, &body, light, hl, None);
+                    // Eight legs: each goes up and out to a knee, then bends down.
                     for k in 0..8 {
                         let side = if k < 4 { -1.0 } else { 1.0 };
                         let j = (k % 4) as f32;
-                        let wig = (a * 9.0 + j * 1.3).sin() * 0.3;
-                        let leg = base
-                            * Mat4::from_translation(Vec3::new(side * 0.3, 0.25 - j * 0.16, 0.0))
-                            * Mat4::from_rotation_z(side * (0.9 + wig))
-                            * Mat4::from_translation(Vec3::new(side * 0.3, 0.0, 0.0))
-                            * Mat4::from_scale(Vec3::new(0.6, 0.06, 0.06));
-                        push_box(out, &leg, T_WHITE, [0.17, 0.13, 0.2], light, 0.2);
+                        let wig = (a * 9.0 + j * 1.3 + side).sin() * 0.18;
+                        let hip = Vec3::new(side * 0.34, 0.0, 0.3 - j * 0.2);
+                        let spread = Mat4::from_rotation_y(side * (0.45 - j * 0.3));
+                        let up_ang = 0.6 + wig;
+                        let upper = base
+                            * Mat4::from_translation(hip)
+                            * spread
+                            * Mat4::from_rotation_z(side * up_ang)
+                            * Mat4::from_translation(Vec3::new(side * 0.18, 0.0, 0.0))
+                            * Mat4::from_scale(Vec3::new(0.38, 0.06, 0.06));
+                        push_box(out, &upper, T_WHITE, [0.2, 0.15, 0.24], light, 0.25);
+                        let knee = Vec3::new(side * 0.36 * up_ang.cos(), 0.36 * up_ang.sin(), 0.0);
+                        let lower = base
+                            * Mat4::from_translation(hip)
+                            * spread
+                            * Mat4::from_translation(knee)
+                            * Mat4::from_rotation_z(-side * (1.15 - wig))
+                            * Mat4::from_translation(Vec3::new(side * 0.24, 0.0, 0.0))
+                            * Mat4::from_scale(Vec3::new(0.5, 0.05, 0.05));
+                        push_box(out, &lower, T_WHITE, [0.2, 0.15, 0.24], light, 0.25);
                     }
                 }
                 Kind::Book => {
@@ -1364,19 +1569,27 @@ impl Game {
     fn draw_scores(&self, ui: &mut Ui) {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
         let pw = w / 4.0;
-        let ph = 18.0 * unit;
+        let ph = (18.0 * unit).min(h * 0.09);
+        let pad = unit * 3.0;
         for (i, p) in self.players.iter().enumerate() {
-            let x = i as f32 * pw + unit * 3.0;
-            let y = h - ph - unit * 3.0;
+            let x = i as f32 * pw + pad;
+            let bw = pw - pad * 2.0;
+            let y = h - ph - pad;
             let c = PLAYER_COLORS[i];
+            let inner = bw - unit * 8.0;
             if p.joined {
-                ui.panel(x, y, pw - unit * 6.0, ph, [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25, 0.8], [c[0], c[1], c[2], 1.0]);
-                ui.text(&format!("P{}", i + 1), x + unit * 4.0, y + unit * 5.0, 1.0, [c[0], c[1], c[2], 1.0], Align::Left);
-                ui.text(&format!("{}", p.shown.round() as u32), x + pw - unit * 10.0, y + unit * 3.5, 1.6, [1.0, 1.0, 1.0, 1.0], Align::Right);
+                ui.panel(x, y, bw, ph, [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25, 0.8], [c[0], c[1], c[2], 1.0]);
+                let label = format!("P{}", i + 1);
+                let lw = ui.text_width(&label, 1.0).min(inner * 0.3);
+                ui.text_fit(&label, x + unit * 4.0, y + ph * 0.5 - 4.0 * unit, 1.0, inner * 0.3, [c[0], c[1], c[2], 1.0], Align::Left);
+                let score = format!("{}", p.shown.round() as u32);
+                let sw = inner - lw - unit * 4.0;
+                let sc = (1.6f32).min(sw / ui.text_width(&score, 1.0)).min(ph / (8.0 * unit) * 0.75);
+                ui.text(&score, x + bw - unit * 4.0, y + ph * 0.5 - 4.0 * sc * unit, sc, [1.0, 1.0, 1.0, 1.0], Align::Right);
             } else {
-                ui.panel(x, y, pw - unit * 6.0, ph, [0.0, 0.0, 0.0, 0.35], [c[0] * 0.5, c[1] * 0.5, c[2] * 0.5, 0.6]);
-                let txt = if self.debug { "PRESS A / 1-4" } else { "PRESS A" };
-                ui.text(txt, x + (pw - unit * 6.0) * 0.5, y + unit * 6.0, 0.8, [c[0], c[1], c[2], 0.7], Align::Center);
+                ui.panel(x, y, bw, ph, [0.0, 0.0, 0.0, 0.35], [c[0] * 0.5, c[1] * 0.5, c[2] * 0.5, 0.6]);
+                let txt = if self.debug { "KEY 1-4" } else { "PRESS A" };
+                ui.text_fit(txt, x + bw * 0.5, y + ph * 0.5 - 3.2 * unit, 0.8, inner, [c[0], c[1], c[2], 0.7], Align::Center);
             }
         }
     }
@@ -1387,69 +1600,90 @@ impl Game {
         let bob = (t * 2.0).sin() * 2.0 * unit;
         ui.rect(0.0, h * 0.1, w, 52.0 * unit, [0.0, 0.0, 0.0, 0.35]);
         ui.text_fit("HAUNTED HOLLOW", w * 0.5, h * 0.12 + bob, 5.0, w * 0.92, [1.0, 0.55, 0.08, 1.0], Align::Center);
-        ui.text("THE SPOOKY COASTER RIDE", w * 0.5, h * 0.12 + 46.0 * unit, 1.5, [0.75, 0.55, 1.0, 1.0], Align::Center);
+        ui.text_fit("THE SPOOKY COASTER RIDE", w * 0.5, h * 0.12 + 46.0 * unit, 1.5, w * 0.9, [0.75, 0.55, 1.0, 1.0], Align::Center);
 
+        // Four player cards in a row; every line is fitted to its card.
         let pw = w / 4.0;
-        let y = h * 0.58;
+        let card_h = 40.0 * unit;
+        let y = h * 0.56;
         for (i, p) in self.players.iter().enumerate() {
             let c = PLAYER_COLORS[i];
             let x = i as f32 * pw + pw * 0.5;
-            let bw = pw - 12.0 * unit;
-            let a = if p.joined { 1.0 } else { 0.5 };
-            ui.panel(x - bw * 0.5, y, bw, 34.0 * unit, [c[0] * 0.2, c[1] * 0.2, c[2] * 0.2, 0.8 * a], [c[0], c[1], c[2], a]);
-            ui.text(&format!("PLAYER {}", i + 1), x, y + 5.0 * unit, 1.1, [c[0], c[1], c[2], a], Align::Center);
-            ui.text(PLAYER_NAMES[i], x, y + 14.0 * unit, 0.8, [c[0], c[1], c[2], a], Align::Center);
-            let status = if p.joined {
-                "READY!"
-            } else if (t * 2.0) as i32 % 2 == 0 {
-                if self.debug { "CLICK / PRESS A" } else { "PRESS A" }
-            } else {
-                ""
-            };
-            ui.text(status, x, y + 24.0 * unit, 1.0, [1.0, 1.0, 1.0, 1.0], Align::Center);
+            let bw = pw - 8.0 * unit;
+            let inner = bw - 8.0 * unit;
+            let a = if p.joined { 1.0 } else { 0.55 };
+            let pulse = if p.joined { 1.0 + 0.04 * (t * 6.0).sin() } else { 1.0 };
+            ui.panel(x - bw * 0.5, y, bw, card_h, [c[0] * 0.2, c[1] * 0.2, c[2] * 0.2, 0.85 * a], [c[0], c[1], c[2], a]);
+            ui.text_fit(&format!("PLAYER {}", i + 1), x, y + 5.0 * unit, 1.1, inner, [c[0], c[1], c[2], a], Align::Center);
+            ui.text_fit(PLAYER_NAMES[i], x, y + 16.0 * unit, 0.8, inner, [c[0], c[1], c[2], a], Align::Center);
+            if p.joined {
+                ui.text_fit("READY!", x, y + 27.0 * unit, 1.1 * pulse, inner, [1.0, 1.0, 1.0, 1.0], Align::Center);
+            } else if (t * 1.5) as i32 % 2 == 0 {
+                let key = if self.debug { "KEY 1-4" } else { "PRESS A" };
+                ui.text_fit(key, x, y + 28.0 * unit, 0.9, inner, [1.0, 1.0, 1.0, 0.9], Align::Center);
+            }
         }
         let msg = if self.joined_count() == 0 {
-            "PRESS A ON YOUR WII REMOTE TO JOIN".to_string()
+            if self.debug { "CLICK OR PRESS A TO JOIN".to_string() } else { "PRESS A ON YOUR WII REMOTE TO JOIN".to_string() }
         } else {
             let left = 15.0 - self.title_join_t.unwrap_or(0.0);
             let key = if self.debug { "PRESS + OR ENTER TO START" } else { "PRESS + TO START" };
-            format!("{key}   ({:.0})", left.max(0.0).ceil())
+            format!("{key}  ({:.0})", left.max(0.0).ceil())
         };
-        ui.text_fit(&msg, w * 0.5, h * 0.86, 1.3, w * 0.92, [1.0, 0.9, 0.5, 1.0], Align::Center);
-        ui.text_fit("POINT AT THE SCREEN AND PRESS B TO POP THE SPOOKS!", w * 0.5, h * 0.92, 0.8, w * 0.92, [0.8, 0.8, 0.9, 0.9], Align::Center);
+        ui.text_fit(&msg, w * 0.5, h * 0.84, 1.3, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
+        ui.text_fit("POINT AT THE SCREEN AND PRESS B TO POP THE SPOOKS!", w * 0.5, h * 0.91, 0.8, w * 0.9, [0.8, 0.8, 0.9, 0.9], Align::Center);
     }
 
     fn draw_results(&self, ui: &mut Ui) {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
-        ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.92]);
-        ui.text_fit("WHAT A SPOOKTACULAR RIDE!", w * 0.5, h * 0.08, 2.6, w * 0.92, [1.0, 0.55, 0.08, 1.0], Align::Center);
+        ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.94]);
+        ui.text_fit("WHAT A SPOOKTACULAR RIDE!", w * 0.5, h * 0.07, 2.6, w * 0.92, [1.0, 0.55, 0.08, 1.0], Align::Center);
         let mut order: Vec<usize> = (0..4).filter(|&i| self.players[i].joined).collect();
         order.sort_by(|a, b| self.players[*b].score.cmp(&self.players[*a].score));
         let medal = [("1ST", [1.0, 0.82, 0.2]), ("2ND", [0.8, 0.82, 0.9]), ("3RD", [0.85, 0.55, 0.3]), ("4TH", [0.6, 0.6, 0.7])];
-        let row_h = 34.0 * unit;
-        let top = h * 0.24;
-        let reveal = self.state_t;
+        let top = h * 0.2;
+        let avail = h * 0.66;
+        let gap = 5.0 * unit;
+        let row_h = ((avail - gap * 3.0) / 4.0).min(36.0 * unit);
+        let rw = (w * 0.86).min(row_h * 9.0);
+        let x = (w - rw) * 0.5;
+        // Column layout: medal | name + award | score + stats.
+        let pad = row_h * 0.18;
+        let col_medal = rw * 0.17;
+        let col_name = rw * 0.43;
+        let col_score = rw - col_medal - col_name - pad * 3.0;
+        let line = row_h / (8.0 * unit); // font scale that fills the row height
         for (rank, &i) in order.iter().enumerate() {
-            let appear = smooth((reveal - 0.4 * (order.len() - rank) as f32) / 0.4);
+            let appear = smooth((self.state_t - 0.4 * (order.len() - rank) as f32) / 0.4);
             if appear <= 0.0 {
                 continue;
             }
             let p = &self.players[i];
             let c = PLAYER_COLORS[i];
-            let y = top + rank as f32 * (row_h + 6.0 * unit);
-            let x = w * 0.12;
-            let rw = w * 0.76;
+            let y = top + rank as f32 * (row_h + gap);
             ui.panel(x, y, rw, row_h, [c[0] * 0.2, c[1] * 0.2, c[2] * 0.2, 0.9 * appear], [c[0], c[1], c[2], appear]);
             let (mt, mc) = medal[rank];
-            ui.text(mt, x + 6.0 * unit, y + 9.0 * unit, 2.0, [mc[0], mc[1], mc[2], appear], Align::Left);
-            ui.text(&format!("PLAYER {}", i + 1), x + 50.0 * unit, y + 6.0 * unit, 1.3, [c[0], c[1], c[2], appear], Align::Left);
-            ui.text(self.award(i), x + 50.0 * unit, y + 20.0 * unit, 1.0, [1.0, 1.0, 1.0, appear], Align::Left);
-            ui.text(&format!("{}", p.score), x + rw - 6.0 * unit, y + 6.0 * unit, 2.0, [1.0, 1.0, 1.0, appear], Align::Right);
+            let ms = (line * 0.42).min(col_medal / ui.text_width(mt, 1.0));
+            ui.text(mt, x + pad, y + (row_h - 8.0 * ms * unit) * 0.5, ms, [mc[0], mc[1], mc[2], appear], Align::Left);
+            let nx = x + pad * 2.0 + col_medal;
+            let name = format!("PLAYER {}", i + 1);
+            let ns = (line * 0.3).min(col_name / ui.text_width(&name, 1.0));
+            ui.text(&name, nx, y + row_h * 0.16, ns, [c[0], c[1], c[2], appear], Align::Left);
+            let award = self.award(i);
+            let asc = (line * 0.22).min(col_name / ui.text_width(award, 1.0));
+            ui.text(award, nx, y + row_h * 0.6, asc, [1.0, 1.0, 1.0, appear], Align::Left);
+            let rx = x + rw - pad;
+            let score = format!("{}", p.score);
+            let ss = (line * 0.36).min(col_score / ui.text_width(&score, 1.0));
+            ui.text(&score, rx, y + row_h * 0.12, ss, [1.0, 1.0, 1.0, appear], Align::Right);
             let acc = if p.shots > 0 { p.hits * 100 / p.shots } else { 0 };
-            ui.text(&format!("{} POPS  {}% AIM", p.hits, acc), x + rw - 6.0 * unit, y + 23.0 * unit, 0.8, [0.85, 0.85, 0.9, appear], Align::Right);
+            let stats = format!("{} POPS {}% AIM", p.hits, acc);
+            let sts = (line * 0.18).min(col_score / ui.text_width(&stats, 1.0));
+            ui.text(&stats, rx, y + row_h * 0.68, sts, [0.85, 0.85, 0.9, appear], Align::Right);
         }
         if self.state_t > 4.0 && (self.state_t * 2.0) as i32 % 2 == 0 {
-            ui.text("PRESS A TO RIDE AGAIN!", w * 0.5, h * 0.9, 1.5, [1.0, 0.9, 0.5, 1.0], Align::Center);
+            let msg = if self.debug { "CLICK TO RIDE AGAIN!" } else { "PRESS A TO RIDE AGAIN!" };
+            ui.text_fit(msg, w * 0.5, h * 0.9, 1.5, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
         }
     }
 

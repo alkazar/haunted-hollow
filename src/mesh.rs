@@ -479,23 +479,28 @@ fn boss_cape() -> Model {
 }
 
 fn cart() -> Model {
-    // The front of the ride cart, seen at the bottom of the screen.
-    Model::build(16, 6, 6, 0.11, |x, y, z| {
-        if y == 5 && (x == 0 || x == 15 || z == 5) {
-            return vox(0xd8a020, 0.6); // gold trim
+    // The riders' cart: a wide tub whose front wall and sides frame the bottom of
+    // the screen. Model faces +Z; the camera sits inside it.
+    Model::build(30, 7, 14, 0.15, |x, y, z| {
+        let side = x <= 1 || x >= 28;
+        let front = z >= 12;
+        let rim = y == 6;
+        if !(side || front || y == 0) {
+            return None;
         }
-        if z == 5 && y >= 1 && y <= 3 && (x == 6 || x == 9) && y == 3 {
-            return vox(0xffd84a, 1.0);
+        if rim && (side || front) {
+            // Gold trim with little studs.
+            return if (x + z) % 4 == 0 { vox(0xfff0a0, 0.7) } else { vox(0xd8a020, 0.55) };
         }
-        if z == 5 && y == 2 && (6..=9).contains(&x) {
-            return vox(0xffd84a, 1.0);
+        if front && z == 12 && y >= 2 && y <= 4 && (x == 5 || x == 24) {
+            return vox(0xffd84a, 1.0); // small lanterns on the inside of the front
         }
-        if y < 5 && z < 4 && x > 0 && x < 15 && y > 0 {
-            return None; // seat well
+        if front && y == 3 && z == 13 {
+            return vox(0xff9a1e, 0.5); // orange stripe
         }
-        if z == 5 && (5..=10).contains(&x) && y >= 1 {
-            return vox(0xe07a12, 0.6); // pumpkin badge
+        if (side || front) && y == 1 {
+            return vox(0x4a0c18, 0.4);
         }
-        vox(0x7a1424, 0.6)
+        vox(0x7a1424, 0.45)
     })
 }

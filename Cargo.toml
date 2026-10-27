@@ -9,6 +9,7 @@ ash-window = "0.13"
 evdev = "0.12"
 font8x8 = "0.3"
 glam = "0.29"
+libloading = "0.8"
 raw-window-handle = "0.6"
 winit = "0.30"
 

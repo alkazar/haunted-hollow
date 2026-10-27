@@ -11,6 +11,9 @@ USAGE: haunted_hollow [OPTIONS]
   --bots N             Add N computer players who play by themselves (attract/demo)
   --boss               Start right at the boss fight
   --timescale X        Run the simulation X times faster
+  --mute               No music or sound effects
+  --dump-audio DIR     Write all music and sound effects as WAV files and exit
+                       (sound uses ALSA; set HAUNTED_ALSA_DEVICE to pick a device)
 
 Wii Remote calibration (sensor bar):
   --wii-flip-x         Invert horizontal pointing

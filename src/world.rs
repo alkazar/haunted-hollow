@@ -3,7 +3,7 @@
 //! flood-fill block lighting (coloured) and moonlight, plus mesh generation.
 
 use crate::atlas::*;
-use crate::mesh::{push_box, push_quad, shade, FACES};
+use crate::mesh::{push_box, push_box_tiles, push_quad, shade, FACES};
 use crate::rng::Rng;
 use crate::track::Track;
 use crate::vk::Vertex;
@@ -55,6 +55,19 @@ pub mod b {
     pub const FIRE: u8 = 31;
     pub const HAY: u8 = 32;
     pub const PORTRAIT2: u8 = 33;
+    pub const TALLGRASS: u8 = 34;
+    pub const DEADBUSH: u8 = 35;
+    pub const MUSHROOM: u8 = 36;
+    pub const CLOCK: u8 = 37;
+    pub const CANDY: u8 = 38;
+    pub const IRON: u8 = 39;
+    pub const CAKE: u8 = 40;
+    pub const POT: u8 = 41;
+    pub const BANNER: u8 = 42;
+    pub const CHAIN: u8 = 43;
+    pub const SKULLS: u8 = 44;
+    pub const CAULDRON: u8 = 45;
+    pub const CANDY2: u8 = 46;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -67,6 +80,9 @@ enum Shape {
     Candle,
     Lantern,
     Bones,
+    Small,
+    Banner,
+    Cauldron,
 }
 
 #[derive(Clone, Copy)]
@@ -76,10 +92,11 @@ struct Props {
     tiles: [u8; 3], // top, side, bottom
     emit: [u8; 3],
     glow: bool,
+    size: [f32; 3],
 }
 
 fn props(id: u8) -> Props {
-    let cube = |t: u8| Props { opaque: true, shape: Shape::Cube, tiles: [t, t, t], emit: [0; 3], glow: false };
+    let cube = |t: u8| Props { opaque: true, shape: Shape::Cube, tiles: [t, t, t], emit: [0; 3], glow: false, size: [1.0; 3] };
     match id {
         b::GRASS => Props { tiles: [T_GRASS_TOP, T_GRASS_SIDE, T_DIRT], ..cube(0) },
         b::DIRT => cube(T_DIRT),
@@ -114,7 +131,20 @@ fn props(id: u8) -> Props {
         b::BONES => Props { opaque: false, shape: Shape::Bones, ..cube(T_BONE) },
         b::FIRE => Props { opaque: false, shape: Shape::Cross, emit: [15, 9, 3], glow: true, ..cube(T_FIRE) },
         b::HAY => Props { tiles: [T_HAY, T_HAY, T_HAY], ..cube(0) },
-        _ => Props { opaque: false, shape: Shape::Cube, tiles: [0; 3], emit: [0; 3], glow: false },
+        b::TALLGRASS => Props { opaque: false, shape: Shape::Cross, ..cube(T_TALLGRASS) },
+        b::DEADBUSH => Props { opaque: false, shape: Shape::Cross, ..cube(T_DEADBUSH) },
+        b::MUSHROOM => Props { opaque: false, shape: Shape::Cross, emit: [5, 2, 2], ..cube(T_MUSHROOM) },
+        b::CLOCK => Props { tiles: [T_DARKPLANK, T_CLOCK, T_DARKPLANK], ..cube(0) },
+        b::CANDY => cube(T_CANDY),
+        b::CANDY2 => cube(T_CANDY2),
+        b::IRON => cube(T_IRON),
+        b::SKULLS => cube(T_SKULLS),
+        b::CAKE => Props { opaque: false, shape: Shape::Small, tiles: [T_CAKE_TOP, T_CAKE_SIDE, T_CAKE_SIDE], size: [0.8, 0.5, 0.8], ..cube(0) },
+        b::POT => Props { opaque: false, shape: Shape::Small, tiles: [T_POT, T_POT, T_POT], size: [0.5, 0.7, 0.5], ..cube(0) },
+        b::BANNER => Props { opaque: false, shape: Shape::Banner, ..cube(T_BANNER) },
+        b::CHAIN => Props { opaque: false, shape: Shape::Cross, ..cube(T_CHAIN) },
+        b::CAULDRON => Props { opaque: false, shape: Shape::Cauldron, emit: [3, 13, 5], ..cube(T_IRON) },
+        _ => Props { opaque: false, shape: Shape::Cube, tiles: [0; 3], emit: [0; 3], glow: false, size: [1.0; 3] },
     }
 }
 
@@ -452,6 +482,36 @@ impl World {
                 let skull = Mat4::from_translation(c + Vec3::new(0.15 * h, 0.14, -0.1)) * Mat4::from_scale(Vec3::splat(0.28));
                 push_box(out, &skull, T_BONE, [1.0; 3], light, 0.2);
             }
+            Shape::Small => {
+                let sz = Vec3::from(p.size);
+                let (top, side) = (p.tiles[0], p.tiles[1]);
+                let mm = m(c + Vec3::Y * sz.y * 0.5, sz);
+                push_box_tiles(out, &mm, [side, side, top, side, side, side], [1.0; 3], light, 0.15);
+                if id == b::CAKE {
+                    push_box(out, &m(c + Vec3::Y * 0.62, Vec3::new(0.06, 0.16, 0.06)), T_WHITE, [1.0, 0.6, 0.7], light, 0.4);
+                    push_box(out, &m(c + Vec3::Y * 0.74, Vec3::new(0.07, 0.08, 0.07)), T_WHITE, [1.0, 0.85, 0.3], light, 1.0);
+                }
+            }
+            Shape::Banner => {
+                let mut dir = Vec3::new(0.0, 0.0, 1.0);
+                for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    if props(self.get(x + dx, y, z + dz)).opaque {
+                        dir = Vec3::new(dx as f32, 0.0, dz as f32);
+                        break;
+                    }
+                }
+                let size = if dir.x != 0.0 { Vec3::new(0.06, 1.0, 0.9) } else { Vec3::new(0.9, 1.0, 0.06) };
+                push_box(out, &m(c + dir * 0.45 + Vec3::Y * 0.5, size), T_BANNER, [1.0; 3], light, 0.1);
+            }
+            Shape::Cauldron => {
+                push_box(out, &m(c + Vec3::Y * 0.36, Vec3::new(0.9, 0.72, 0.9)), T_IRON, [0.3, 0.3, 0.34], light, 0.0);
+                push_box(out, &m(c + Vec3::Y * 0.72, Vec3::new(0.76, 0.04, 0.76)), T_SLIME, [1.0; 3], light, 1.0);
+                for k in 0..3 {
+                    let a = k as f32 * 2.1 + x as f32;
+                    let pos = c + Vec3::new(a.cos() * 0.2, 0.8 + k as f32 * 0.12, a.sin() * 0.2);
+                    push_box(out, &m(pos, Vec3::splat(0.08 + k as f32 * 0.02)), T_SLIME, [1.0; 3], light, 1.0);
+                }
+            }
             Shape::Cross => {
                 let uv = tile_uv(p.tiles[1]);
                 let col = if p.glow { [1.0, 1.0, 1.0, 0.0] } else { [light.x, light.y, light.z, 1.0] };
@@ -597,6 +657,7 @@ pub fn generate(track: &Track) -> World {
     house(&mut w, &mut rng);
     crypt(&mut w, &mut rng);
     lair(&mut w, &mut rng);
+    decorate(&mut w, &mut rng, &path);
     carve(&mut w, track);
     after_carve(&mut w, track);
     w.compute_light();
@@ -1120,4 +1181,265 @@ fn after_carve(w: &mut World, track: &Track) {
             side = -side;
         }
     }
+}
+
+fn dead_tree(w: &mut World, rng: &mut Rng, tx: i32, base_y: i32, tz: i32, h: i32) {
+    w.fill(tx, tx, base_y, base_y + h - 1, tz, tz, b::LOG);
+    let dirs = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1)];
+    let n = rng.int(2, 4);
+    for k in 0..n {
+        let (dx, dz) = dirs[((k + rng.int(0, 5)) % 6) as usize];
+        let (mut x, mut z) = (tx, tz);
+        let mut y = base_y + h - 1 - rng.int(0, 3);
+        for _ in 0..rng.int(2, 4) {
+            x += dx;
+            z += dz;
+            y += rng.int(0, 1);
+            w.set(x, y, z, b::LOG);
+        }
+        if rng.chance(0.3) && w.is_air(x, y - 1, z) {
+            w.set(x, y - 1, z, if rng.chance(0.5) { b::WEB } else { b::LANTERN });
+        }
+    }
+}
+
+fn scatter(w: &mut World, rng: &mut Rng, n: usize, xr: (i32, i32), y: i32, zr: (i32, i32), floor_ok: &[u8], pick: &dyn Fn(&mut Rng) -> u8) {
+    for _ in 0..n {
+        let x = rng.int(xr.0, xr.1);
+        let z = rng.int(zr.0, zr.1);
+        if w.is_air(x, y, z) && floor_ok.contains(&w.get(x, y - 1, z)) {
+            let id = pick(rng);
+            w.set(x, y, z, id);
+        }
+    }
+}
+
+fn float_candles(w: &mut World, rng: &mut Rng, n: usize, xr: (i32, i32), yr: (i32, i32), zr: (i32, i32)) {
+    for _ in 0..n {
+        let (x, y, z) = (rng.int(xr.0, xr.1), rng.int(yr.0, yr.1), rng.int(zr.0, zr.1));
+        if w.is_air(x, y, z) && w.is_air(x, y - 1, z) {
+            w.set(x, y, z, b::CANDLE);
+        }
+    }
+}
+
+fn armor(w: &mut World, x: i32, y: i32, z: i32) {
+    w.set(x, y, z, b::FENCE);
+    w.set(x, y + 1, z, b::IRON);
+    w.set(x, y + 2, z, b::SKULLS);
+}
+
+fn clock(w: &mut World, x: i32, y: i32, z: i32) {
+    w.set(x, y, z, b::DARKPLANK);
+    w.set(x, y + 1, z, b::DARKPLANK);
+    w.set(x, y + 2, z, b::CLOCK);
+    w.set(x, y + 3, z, b::LOG);
+}
+
+fn banners(w: &mut World, x: i32, ys: (i32, i32), zr: (i32, i32), step: usize) {
+    for z in (zr.0..=zr.1).step_by(step) {
+        if w.is_air(x, ys.1, z) && w.is_air(x, ys.0, z) {
+            w.set(x, ys.0, z, b::BANNER);
+            w.set(x, ys.1, z, b::BANNER);
+        }
+    }
+}
+
+/// Fills every area with props so the ride feels lived-in (well... un-lived-in).
+fn decorate(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
+    let ground = |r: &mut Rng| -> u8 {
+        let k = r.f();
+        if k < 0.68 {
+            b::TALLGRASS
+        } else if k < 0.9 {
+            b::DEADBUSH
+        } else {
+            b::MUSHROOM
+        }
+    };
+    // ---------------- Graveyard: dead forest beyond the fence, ground cover, props.
+    for _ in 0..70 {
+        let side = if rng.chance(0.5) { -1 } else { 1 };
+        let x = side * rng.int(27, 38);
+        let z = rng.int(-30, 37);
+        if w.is_air(x, 1, z) && w.get(x, 0, z) == b::GRASS {
+            let h = rng.int(6, 12);
+            dead_tree(w, rng, x, 1, z, h);
+        }
+    }
+    for _ in 0..30 {
+        let x = rng.int(-36, 36);
+        let z = rng.int(-31, -27);
+        if w.is_air(x, 1, z) && x.abs() > 3 {
+            let h = rng.int(6, 11);
+            dead_tree(w, rng, x, 1, z, h);
+        }
+    }
+    let mut placed = 0;
+    for _ in 0..200 {
+        if placed >= 10 {
+            break;
+        }
+        let x = rng.int(-21, 21);
+        let z = rng.int(-6, 34);
+        if !near_track(path, x as f32 + 0.5, z as f32 + 0.5, 5.5) && w.is_air(x, 1, z) && w.is_air(x + 1, 2, z) {
+            let h = rng.int(5, 8);
+            dead_tree(w, rng, x, 1, z, h);
+            placed += 1;
+        }
+    }
+    for _ in 0..1600 {
+        let x = rng.int(-39, 39);
+        let z = rng.int(-31, 38);
+        if w.get(x, 0, z) == b::GRASS && w.is_air(x, 1, z) && !near_track(path, x as f32 + 0.5, z as f32 + 0.5, 1.6) {
+            let id = ground(rng);
+            w.set(x, 1, z, id);
+        }
+    }
+    // Candles on gravestones.
+    for x in -24..24 {
+        for z in -10..38 {
+            for y in 2..5 {
+                if w.get(x, y - 1, z) == b::GRAVE && w.is_air(x, y, z) && rng.chance(0.18) {
+                    w.set(x, y, z, b::CANDLE);
+                }
+            }
+        }
+    }
+    // Scarecrow by the station.
+    for &(sx, sz) in &[(9, -14), (-10, 6)] {
+        if near_track(path, sx as f32, sz as f32, 3.0) {
+            continue;
+        }
+        w.fill(sx, sx, 1, 2, sz, sz, b::FENCE);
+        w.set(sx, 3, sz, b::HAY);
+        w.set(sx - 1, 3, sz, b::FENCE);
+        w.set(sx + 1, 3, sz, b::FENCE);
+        w.set_meta(sx, 4, sz, b::PUMPKIN, 1);
+    }
+    // Pumpkin patch.
+    for _ in 0..40 {
+        let x = rng.int(10, 21);
+        let z = rng.int(-8, 4);
+        if !near_track(path, x as f32 + 0.5, z as f32 + 0.5, 3.2) && w.is_air(x, 1, z) {
+            if rng.chance(0.75) {
+                w.set_meta(x, 1, z, b::PUMPKIN, rng.int(0, 5) as u8);
+            } else {
+                w.set(x, 1, z, b::HAY);
+            }
+        }
+    }
+    // Witch's cauldron by the mausoleum.
+    w.set(-13, 1, 29, b::CAULDRON);
+    w.set(-12, 1, 31, b::CAULDRON);
+    w.set(-11, 1, 29, b::POT);
+
+    // ---------------- Foyer
+    for &z in &[44, 51, 61] {
+        armor(w, -15, 1, z);
+    }
+    clock(w, -15, 1, 68);
+    clock(w, 15, 1, 42);
+    banners(w, -15, (12, 13), (44, 68), 6);
+    banners(w, 15, (13, 14), (43, 67), 6);
+    for &z in &[48, 54, 65] {
+        if w.is_air(-14, 1, z) {
+            w.set(-14, 1, z, b::PLANK);
+            w.set(-14, 2, z, b::CANDLE);
+        }
+    }
+    float_candles(w, rng, 40, (-14, 14), (8, 16), (42, 68));
+    scatter(w, rng, 10, (-14, 14), 10, (61, 68), &[b::DARKPLANK], &|_| b::POT);
+
+    // ---------------- Library
+    float_candles(w, rng, 45, (-13, 13), (6, 16), (73, 98));
+    for &z in &[75, 82, 90, 96] {
+        for &x in &[-14, 14] {
+            if w.is_air(x, 1, z) {
+                w.fill(x, x, 1, 10, z, z, b::FENCE);
+            }
+        }
+    }
+    banners(w, -14, (13, 14), (74, 98), 7);
+    banners(w, 14, (13, 14), (77, 97), 7);
+    clock(w, 13, 1, 97);
+    w.set(-1, 1, 81, b::CAULDRON);
+    for (dx, dz) in [(1, 0), (0, 1), (-1, 1)] {
+        if w.is_air(-1 + dx, 1, 81 + dz) {
+            w.set(-1 + dx, 1, 81 + dz, b::POT);
+        }
+    }
+    scatter(w, rng, 20, (-13, 13), 5, (73, 98), &[b::BOOKSHELF], &|_| b::POT);
+    scatter(w, rng, 20, (-13, 13), 5, (73, 98), &[b::BOOKSHELF], &|_| b::CANDLE);
+
+    // ---------------- Dining hall
+    for z in (106..126).step_by(4) {
+        if w.is_air(-9, 2, z) {
+            w.set(-9, 2, z, b::CAKE);
+        }
+        if w.is_air(-11, 2, z + 1) {
+            w.set(-11, 2, z + 1, b::POT);
+        }
+        if w.is_air(-8, 2, z + 2) {
+            w.set(-8, 2, z + 2, b::POT);
+        }
+    }
+    for &z in &[104, 112, 120, 128] {
+        armor(w, -15, 1, z);
+    }
+    banners(w, -15, (11, 12), (103, 129), 5);
+    banners(w, 15, (12, 13), (103, 129), 5);
+    clock(w, 15, 1, 104);
+    w.fill(14, 14, 1, 1, 121, 127, b::PLANK);
+    for z in (121..=127).step_by(2) {
+        w.set(14, 2, z, if z % 4 == 1 { b::CAKE } else { b::CANDLE });
+    }
+    float_candles(w, rng, 30, (-14, 14), (8, 16), (102, 129));
+
+    // ---------------- Crypt
+    for &z in &[147, 159, 171] {
+        for &x in &[-13, 13] {
+            w.fill(x, x, -17, -15, z, z, b::DARKPLANK);
+        }
+    }
+    scatter(w, rng, 24, (-13, 13), -17, (141, 175), &[b::MOSSY], &|r| if r.chance(0.5) { b::POT } else { b::SKULLS });
+    scatter(w, rng, 40, (-13, 13), -17, (141, 175), &[b::MOSSY], &|_| b::MUSHROOM);
+    for _ in 0..30 {
+        let x = rng.int(-13, 13);
+        let z = rng.int(141, 175);
+        let len = rng.int(1, 4);
+        for k in 0..len {
+            if w.is_air(x, -7 - k, z) {
+                w.set(x, -7 - k, z, b::CHAIN);
+            }
+        }
+    }
+    w.set(-11, -17, 152, b::CAULDRON);
+    w.set(11, -17, 166, b::CAULDRON);
+    banners(w, -13, (-10, -9), (143, 175), 6);
+    banners(w, 13, (-10, -9), (146, 175), 6);
+
+    // ---------------- Pumpkin King's lair: candy everywhere!
+    for _ in 0..14 {
+        let x = rng.int(-23, 23);
+        let z = rng.int(181, 212);
+        if x.abs() < 5 {
+            continue;
+        }
+        let h = rng.int(1, 3);
+        for y in 0..h {
+            for dx in -(h - y - 1)..=(h - y - 1) {
+                let id = if rng.chance(0.5) { b::CANDY } else { b::CANDY2 };
+                w.set(x + dx, -17 + y, z, id);
+            }
+        }
+    }
+    for &(x, z) in &[(-12, 186), (12, 188), (-20, 200), (20, 202), (-8, 210), (9, 209)] {
+        w.fill(x, x, -17, -14, z, z, b::FENCE);
+        w.fill(x - 1, x + 1, -13, -11, z, z, b::CANDY2);
+        w.set(x, -12, z, b::CANDY);
+    }
+    scatter(w, rng, 160, (-25, 25), -17, (178, 213), &[b::GRASS], &ground);
+    banners(w, -25, (-6, -5), (180, 212), 6);
+    banners(w, 25, (-6, -5), (180, 212), 6);
 }

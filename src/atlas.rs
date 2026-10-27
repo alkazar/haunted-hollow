@@ -43,6 +43,20 @@ pub const T_MOON: u8 = 35;
 pub const T_HAY: u8 = 36;
 pub const T_PORTRAIT2: u8 = 37;
 pub const T_DOT: u8 = 38;
+pub const T_TALLGRASS: u8 = 39;
+pub const T_DEADBUSH: u8 = 40;
+pub const T_MUSHROOM: u8 = 41;
+pub const T_CLOCK: u8 = 42;
+pub const T_CANDY: u8 = 43;
+pub const T_IRON: u8 = 44;
+pub const T_CAKE_SIDE: u8 = 45;
+pub const T_CAKE_TOP: u8 = 46;
+pub const T_BANNER: u8 = 47;
+pub const T_CHAIN: u8 = 48;
+pub const T_SKULLS: u8 = 49;
+pub const T_POT: u8 = 50;
+pub const T_SLIME: u8 = 51;
+pub const T_CANDY2: u8 = 52;
 
 /// UV rectangle (u0, v0, u1, v1) for a tile.
 pub fn tile_uv(t: u8) -> [f32; 4] {
@@ -384,6 +398,115 @@ pub fn build() -> Vec<u8> {
         let on = (x == 7 || x == 8) && (5..11).contains(&y) || (y == 7 || y == 8) && (5..11).contains(&x);
         ([1.0, 1.0, 0.95], if on { 1.0 } else { 0.0 })
     });
+    p.tile(T_TALLGRASS, |x, y| {
+        let blade = [2, 5, 7, 10, 13][(x as usize) % 5];
+        let h = 4 + (hash(x, 0, 50) * 11.0) as i32;
+        let on = (x == blade || x % 3 == 1) && y >= 16 - h;
+        (mul(hex(0x4f7a32), 0.75 + hash(x, y, 51) * 0.4), if on { 1.0 } else { 0.0 })
+    });
+    p.tile(T_DEADBUSH, |x, y| {
+        // Twiggy branches spreading up from the bottom centre.
+        let fx = x as f32 - 7.5;
+        let fy = 15.0 - y as f32;
+        let mut on = (fx.abs() < 1.0) && fy < 6.0;
+        for (k, a) in [(-0.9f32), -0.4, 0.3, 0.8, 1.2].iter().enumerate() {
+            let bx = fy * a.sin() * 0.9 + (k as f32 - 2.0) * 0.6;
+            if (fx - bx).abs() < 0.8 && fy > 2.0 + k as f32 && fy < 14.0 - k as f32 {
+                on = true;
+            }
+        }
+        (mul(hex(0x6b4a2a), 0.8 + hash(x, y, 52) * 0.3), if on { 1.0 } else { 0.0 })
+    });
+    p.tile(T_MUSHROOM, |x, y| {
+        let cap = y >= 4 && y <= 8 && ((x as f32 - 7.5).abs() < (9 - y) as f32 * 1.2 + 2.0);
+        let stem = (x == 7 || x == 8) && y > 8 && y < 16;
+        let dot = cap && hash(x / 2, y / 2, 53) > 0.6;
+        if cap {
+            (if dot { hex(0xfff0e0) } else { hex(0xd02a2a) }, 1.0)
+        } else if stem {
+            (hex(0xe8dcc0), 1.0)
+        } else {
+            ([0.0; 3], 0.0)
+        }
+    });
+    p.tile(T_CLOCK, |x, y| {
+        let d = ((x as f32 - 7.5).powi(2) + (y as f32 - 7.5).powi(2)).sqrt();
+        let c = if d < 5.5 {
+            let hand = (x == 7 || x == 8) && y >= 3 && y <= 8 || (y == 7 || y == 8) && x >= 7 && x <= 11;
+            let tick = (d > 4.3) && ((x == 7 || x == 8) || (y == 7 || y == 8));
+            if hand || tick { hex(0x1a1410) } else { hex(0xf0e6c8) }
+        } else if d < 6.5 {
+            hex(0xc8a03c)
+        } else {
+            mul(hex(0x4a3020), 0.85 + hash(x, y, 54) * 0.2)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_CANDY, |x, y| {
+        let c = if ((x + y) / 3) % 2 == 0 { hex(0xffffff) } else { hex(0xe0304a) };
+        (mul(c, 0.92 + hash(x, y, 55) * 0.08), 1.0)
+    });
+    p.tile(T_CANDY2, |x, y| {
+        let c = match ((x - y + 32) / 3) % 3 { 0 => hex(0xff9a1e), 1 => hex(0x9a40e0), _ => hex(0x50d050) };
+        (mul(c, 0.92 + hash(x, y, 56) * 0.08), 1.0)
+    });
+    p.tile(T_IRON, |x, y| {
+        let edge = x == 0 || y == 0 || x == 15 || y == 15;
+        let rivet = (x == 2 || x == 13) && (y == 2 || y == 13);
+        (if rivet { hex(0xe8ecf4) } else if edge { hex(0x6a6e78) } else { mul(hex(0xb0b6c2), 0.85 + hash(x, y / 3, 57) * 0.2) }, 1.0)
+    });
+    p.tile(T_CAKE_SIDE, |x, y| {
+        let c = if y < 4 {
+            hex(0xf8f0f8)
+        } else if y < 6 && x % 4 < 2 {
+            hex(0xf8f0f8)
+        } else if y == 9 {
+            hex(0xff70a0)
+        } else {
+            hex(0x6a3a20)
+        };
+        (mul(c, 0.94 + hash(x, y, 58) * 0.08), 1.0)
+    });
+    p.tile(T_CAKE_TOP, |x, y| {
+        let sprinkle = hash(x, y, 59) > 0.88;
+        let c = if sprinkle { [hex(0xff4060), hex(0x40c0ff), hex(0xffe040)][(hash(y, x, 60) * 3.0) as usize % 3] } else { hex(0xf8f0f8) };
+        (c, 1.0)
+    });
+    p.tile(T_BANNER, |x, y| {
+        // Purple banner with an orange bat and a gold fringe; pointed bottom.
+        if y > 12 && ((x as i32 - 7).abs() + (y - 12) > 6) {
+            return ([0.0; 3], 0.0);
+        }
+        if x < 1 || x > 14 {
+            return ([0.0; 3], 0.0);
+        }
+        let bat = (y == 6 && (3..13).contains(&x) && x != 7 && x != 8) || (y == 5 && (5..11).contains(&x)) || (y == 7 && (6..10).contains(&x)) || (y == 4 && (x == 6 || x == 9));
+        let c = if y < 2 {
+            hex(0xd8a020)
+        } else if bat {
+            hex(0xff8a1e)
+        } else {
+            mul(hex(0x4a1a6a), 0.85 + hash(x, y / 2, 61) * 0.2)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_CHAIN, |x, y| {
+        let link = if (y / 4) % 2 == 0 { (x == 6 || x == 9) && y % 4 != 0 || (x >= 6 && x <= 9 && y % 4 == 0) } else { (x == 7 || x == 8) };
+        (mul(hex(0x7a7e88), 0.8 + hash(x, y, 62) * 0.3), if link { 1.0 } else { 0.0 })
+    });
+    p.tile(T_SKULLS, |x, y| {
+        let cx = x % 8;
+        let cy = y % 8;
+        let eye = cy == 3 && (cx == 2 || cx == 5);
+        let mouth = cy == 6 && cx % 2 == 1;
+        let c = if eye || mouth { hex(0x1a1a1e) } else if cy == 0 || cx == 0 { hex(0x8a8474) } else { mul(hex(0xe2dcc6), 0.9 + hash(x, y, 63) * 0.1) };
+        (c, 1.0)
+    });
+    p.tile(T_POT, |x, y| {
+        let band = y == 3 || y == 12;
+        (mul(if band { hex(0xd8a020) } else { hex(0x8a4a2a) }, 0.85 + hash(x, y, 64) * 0.2), 1.0)
+    });
+    p.tile(T_SLIME, |x, y| (mix(hex(0x40ff70), hex(0xb0ffb0), hash(x / 2, y / 2, 65)), 1.0));
     p.tile(T_MOON, |x, y| {
         let crater = hash(x / 3, y / 3, 39) > 0.72;
         (mul(hex(0xf4efd0), if crater { 0.85 } else { 1.0 }), 1.0)
