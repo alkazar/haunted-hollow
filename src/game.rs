@@ -4,7 +4,7 @@
 use crate::atlas::*;
 use crate::audio::{Music, Sfx, SoundEvent};
 use crate::hud::{Align, Ui};
-use crate::mesh::{hash3, push_box, push_quad, Models, FACES};
+use crate::mesh::{hash3, push_box, push_box_tiles, push_quad, Models, FACES};
 use crate::rng::Rng;
 use crate::track::{Track, RIDE_SECONDS};
 use crate::vk::Vertex;
@@ -43,6 +43,8 @@ pub enum Kind {
     Skeleton,
     Spider,
     Candy,
+    /// A haunted painting that peels off a wall of the house and floats at the riders.
+    Portrait,
 }
 
 impl Kind {
@@ -50,7 +52,7 @@ impl Kind {
         match self {
             Kind::Pumpkin | Kind::Ghost => 100,
             Kind::Bat | Kind::Book | Kind::Spider => 150,
-            Kind::Skeleton => 200,
+            Kind::Skeleton | Kind::Portrait => 200,
             Kind::Candy => 500,
         }
     }
@@ -62,6 +64,7 @@ impl Kind {
             Kind::Spider => 0.7 * 1.5,
             Kind::Bat | Kind::Book => 0.6 * 1.5,
             Kind::Candy => 0.6,
+            Kind::Portrait => 0.75,
         }
     }
     fn index(self) -> usize {
@@ -76,7 +79,8 @@ impl Kind {
     }
 }
 
-const AWARDS: [&str; 9] = [
+/// Award per enemy kind (in `Kind` order), then the boss, then the fallback.
+const AWARDS: [&str; 10] = [
     "PUMPKIN POPPER",
     "GHOST CATCHER",
     "BAT BOPPER",
@@ -84,9 +88,15 @@ const AWARDS: [&str; 9] = [
     "BONE BONKER",
     "SPIDER SPOTTER",
     "CANDY CHAMP",
+    "ART CRITIC",
     "BOSS BUSTER",
     "SPOOKY STAR",
 ];
+
+/// Index of boss hits in `Player::counts` (after one slot per enemy kind).
+const BOSS_COUNT: usize = 8;
+/// Seconds a haunted portrait spends peeling off its wall before it flies.
+const PORTRAIT_PEEL: f32 = 0.8;
 
 struct Target {
     kind: Kind,
@@ -136,7 +146,8 @@ pub struct Player {
     cooldown: f32,
     held: f32,
     kick: f32,
-    counts: [u32; 8],
+    /// Hits per enemy kind, with boss hits last (`BOSS_COUNT`).
+    counts: [u32; 9],
     bot_target: Option<Vec2>,
     bot_think: f32,
 }
@@ -156,7 +167,7 @@ impl Player {
             cooldown: 0.0,
             held: 0.0,
             kick: 0.0,
-            counts: [0; 8],
+            counts: [0; 9],
             bot_target: None,
             bot_think: 0.0,
         }
@@ -166,7 +177,7 @@ impl Player {
         self.shown = 0.0;
         self.hits = 0;
         self.shots = 0;
-        self.counts = [0; 8];
+        self.counts = [0; 9];
     }
 }
 
@@ -216,7 +227,7 @@ pub struct Game {
     last_spawn_sound: [f32; 8],
     pub spawn_stats: (u32, u32),
     /// How many of each kind actually appeared this ride (for testing).
-    pub spawn_kinds: [u32; 7],
+    pub spawn_kinds: [u32; 8],
     lane: usize,
     /// Fireplace and brazier flames, animated every frame.
     fires: Vec<Vec3>,
@@ -343,7 +354,7 @@ impl Game {
             sounds: vec![],
             last_spawn_sound: [-9.0; 8],
             spawn_stats: (0, 0),
-            spawn_kinds: [0; 7],
+            spawn_kinds: [0; 8],
             lane: 0,
             door_open: 0.0,
             fires: vec![],
@@ -428,9 +439,9 @@ impl Game {
         use Kind::*;
         let sections: Vec<(f32, f32, Vec<(Kind, u32)>, f32)> = vec![
             (3.4, t_foyer - 1.2, vec![(Pumpkin, 5), (Bat, 3), (Ghost, 1)], 1.0),
-            (t_foyer + 0.3, t_lib - 0.6, vec![(Ghost, 6), (Bat, 2)], 1.0),
-            (t_lib + 0.3, t_din - 0.6, vec![(Book, 6), (Ghost, 2), (Bat, 1)], 1.0),
-            (t_din + 0.3, t_drop - 0.3, vec![(Skeleton, 5), (Ghost, 2), (Bat, 1)], 1.0),
+            (t_foyer + 0.3, t_lib - 0.6, vec![(Ghost, 5), (Portrait, 3), (Bat, 2)], 1.0),
+            (t_lib + 0.3, t_din - 0.6, vec![(Book, 6), (Portrait, 2), (Ghost, 2), (Bat, 1)], 1.0),
+            (t_din + 0.3, t_drop - 0.3, vec![(Skeleton, 5), (Portrait, 2), (Ghost, 2), (Bat, 1)], 1.0),
             (t_drop + 0.2, t_crypt - 0.3, vec![(Bat, 1)], 0.6),
             (t_crypt + 0.2, t_lair - 0.4, vec![(Spider, 5), (Skeleton, 3), (Ghost, 3), (Bat, 2)], 1.0),
             (t_lair, RIDE_SECONDS - 3.0, vec![(Pumpkin, 3), (Bat, 2)], 1.0),
@@ -563,6 +574,7 @@ impl Game {
             Kind::Book => (0.95, 0.5, 0.9),
             Kind::Bat => (1.1, 0.6, 0.55),
             Kind::Candy => (0.6, 0.35, 0.35),
+            Kind::Portrait => (0.6, 0.75, 0.75),
         }
     }
 
@@ -616,6 +628,15 @@ impl Game {
             Kind::Book => t.home + Vec3::new((a * 1.6 + ph).cos() * 0.9, (a * 3.0).sin() * 0.3, (a * 1.6 + ph).sin() * 0.9),
             Kind::Bat => t.a.lerp(t.b, (a / t.life).min(1.0)) + Vec3::Y * (a * 5.0 + ph).sin() * 0.4,
             Kind::Candy => t.a.lerp(t.b, (a / t.life).min(1.0)) + Vec3::Y * (a * 6.0).sin() * 0.3,
+            // Hangs just off its wall while it peels away, then glides at the riders.
+            Kind::Portrait => {
+                if a < PORTRAIT_PEEL {
+                    t.a
+                } else {
+                    let u = ((a - PORTRAIT_PEEL) / (t.life - PORTRAIT_PEEL)).clamp(0.0, 1.0);
+                    t.a.lerp(t.b, u * u * (3.0 - 2.0 * u)) + Vec3::Y * (a * 2.5 + ph).sin() * 0.12 * (u * 3.0).min(1.0)
+                }
+            }
         }
     }
 
@@ -631,9 +652,9 @@ impl Game {
     fn ghost_substitute(zone: Zone, rng: &mut Rng) -> Kind {
         let pool: &[Kind] = match zone {
             Zone::Graveyard => &[Kind::Bat, Kind::Pumpkin],
-            Zone::Foyer => &[Kind::Bat, Kind::Spider],
-            Zone::Library => &[Kind::Book, Kind::Bat, Kind::Spider],
-            Zone::Dining => &[Kind::Skeleton, Kind::Bat, Kind::Spider],
+            Zone::Foyer => &[Kind::Bat, Kind::Spider, Kind::Portrait],
+            Zone::Library => &[Kind::Book, Kind::Bat, Kind::Spider, Kind::Portrait],
+            Zone::Dining => &[Kind::Skeleton, Kind::Bat, Kind::Spider, Kind::Portrait],
             Zone::Drop | Zone::Crypt => &[Kind::Spider, Kind::Skeleton, Kind::Bat],
             Zone::Lair => &[Kind::Pumpkin, Kind::Bat],
         };
@@ -811,6 +832,26 @@ impl Game {
                 }
                 t.a = Vec3::new(base.x, ceil, base.z);
             }
+            Kind::Portrait => {
+                // Only in the house's rooms, from a stretch of plain wall beside the track.
+                let in_house = |p: Vec3| matches!(zone_at(p), Zone::Foyer | Zone::Library | Zone::Dining);
+                if near.is_some() || !in_house(base) {
+                    return None;
+                }
+                base.y = base.y.clamp(ty + 1.6, ty + 4.2);
+                let s = if side.abs() > 0.3 { side.signum() } else if rng.chance(0.5) { 1.0 } else { -1.0 };
+                let (home, n) = self.wall_spot(base, tright * s)?;
+                if !in_house(home + n) {
+                    return None;
+                }
+                t.home = home;
+                t.a = home + n * 0.7;
+                // It ends up hovering just in front of the cart, off to its own side.
+                let (eye_end, right_end, up_end, _) = self.view_ahead(life * 0.97);
+                let fwd_end = up_end.cross(right_end).normalize_or_zero();
+                let off = (t.a - eye_end).dot(right_end).signum();
+                t.b = eye_end + fwd_end * 4.5 + right_end * off * 1.1 + up_end * 0.3;
+            }
             Kind::Bat | Kind::Candy => {
                 if near.is_none() {
                     base.y = base.y.clamp(ty + 1.8, ty + 4.8);
@@ -836,6 +877,38 @@ impl Game {
         Some(t)
     }
 
+    /// Casts sideways from `from` to the first wall and returns the point on its surface
+    /// and the wall's outward normal, if a whole painting's worth of wall is there.
+    fn wall_spot(&self, from: Vec3, dir: Vec3) -> Option<(Vec3, Vec3)> {
+        if self.world.solid_at(from) {
+            return None;
+        }
+        let mut prev = from;
+        for i in 1..=160 {
+            let p = from + dir * (i as f32 * 0.1);
+            if !self.world.solid_at(p) {
+                prev = p;
+                continue;
+            }
+            let (c, pc) = (p.floor(), prev.floor());
+            let (n, home) = if c.x != pc.x {
+                let n = Vec3::new((pc.x - c.x).signum(), 0.0, 0.0);
+                (n, Vec3::new(if n.x > 0.0 { c.x + 1.0 } else { c.x }, p.y, p.z))
+            } else if c.z != pc.z {
+                let n = Vec3::new(0.0, 0.0, (pc.z - c.z).signum());
+                (n, Vec3::new(p.x, p.y, if n.z > 0.0 { c.z + 1.0 } else { c.z }))
+            } else {
+                return None;
+            };
+            let along = n.cross(Vec3::Y);
+            let solid_behind = [(-0.55, -0.7), (0.55, -0.7), (-0.55, 0.7), (0.55, 0.7), (0.0, 0.0)]
+                .iter()
+                .all(|&(du, dv)| self.world.solid_at(home - n * 0.3 + along * du + Vec3::Y * dv));
+            return solid_behind.then_some((home, n));
+        }
+        None
+    }
+
     fn spawn_sound(&mut self, kind: Kind, at: Vec3) {
         let (sfx, vol) = match kind {
             Kind::Ghost => (Sfx::Ghost, 0.35),
@@ -845,6 +918,7 @@ impl Game {
             Kind::Book => (Sfx::Flutter, 0.4),
             Kind::Pumpkin => (Sfx::Boing, 0.35),
             Kind::Candy => (Sfx::Bonus, 0.25),
+            Kind::Portrait => (Sfx::Rattle, 0.3),
         };
         let k = kind.index();
         if self.total_t - self.last_spawn_sound[k] < 1.2 {
@@ -1047,7 +1121,8 @@ impl Game {
                 t.leave += dt;
             }
             let appear = smooth(t.age / 0.35) * (1.0 - smooth(t.leave / 0.4));
-            t.scale = appear;
+            // A painting is already full size on its wall; it only shrinks away at the end.
+            t.scale = if t.kind == Kind::Portrait { 1.0 - smooth(t.leave / 0.4) } else { appear };
             let mut pos = Self::motion(t, t.age);
             match t.kind {
                 Kind::Pumpkin => pos -= Vec3::Y * (1.0 - appear) * 0.9,
@@ -1537,7 +1612,7 @@ impl Game {
         let pos = b.pos;
         let p = &mut self.players[pi];
         p.hits += 1;
-        p.counts[7] += 1;
+        p.counts[BOSS_COUNT] += 1;
         let pts = if final_hit { 1000 } else { 25 };
         self.sounds.push(SoundEvent { sfx: Sfx::Bonk, vol: 0.55, pan: 0.0, pitch: 0.9 + pi as f32 * 0.1 + (1.0 - b.hp / b.max_hp) * 0.3 });
         if final_hit {
@@ -1806,6 +1881,31 @@ impl Game {
                             * Mat4::from_translation(Vec3::new(side * 0.24, 0.0, 0.0))
                             * Mat4::from_scale(Vec3::new(0.5, 0.05, 0.05));
                         push_box(out, &lower, T_WHITE, [0.2, 0.15, 0.24], light, 0.25);
+                    }
+                }
+                Kind::Portrait => {
+                    // Starts flat on the wall, peels away from it while turning to face
+                    // the cart, then tips and sways as it floats closer.
+                    let n = (t.a - t.home).normalize_or_zero();
+                    let peel = smooth(a / PORTRAIT_PEEL);
+                    let pos = if a < PORTRAIT_PEEL { t.home + n * (0.07 + 0.63 * peel) } else { t.pos };
+                    let wall_yaw = n.x.atan2(n.z);
+                    let turn = smooth((a - 0.3) / 1.2);
+                    let d = (yaw - wall_yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                    let sway = (a * 1.9 + t.phase).sin() * 0.14 * turn;
+                    let mm = Mat4::from_translation(pos)
+                        * Mat4::from_rotation_y(wall_yaw + d * turn)
+                        * Mat4::from_rotation_z(sway)
+                        * Mat4::from_rotation_x(-0.25 * peel * (1.0 - turn))
+                        * Mat4::from_scale(Vec3::splat(s));
+                    let face = if t.variant % 2 == 0 { T_PORTRAIT } else { T_PORTRAIT2 };
+                    let frame = Mat4::from_scale(Vec3::new(1.2, 1.5, 0.12));
+                    push_box_tiles(out, &(mm * frame), [T_GOLD, T_GOLD, T_GOLD, T_GOLD, face, T_DARKPLANK], [1.0; 3], light, hl);
+                    // The painted eyes glow brighter as it closes in.
+                    let glare = 0.6 + 0.4 * (a * 7.0 + t.phase).sin().abs();
+                    for ex in [-0.0375, 0.1125] {
+                        let e = mm * Mat4::from_translation(Vec3::new(ex, 0.14, 0.065)) * Mat4::from_scale(Vec3::new(0.085, 0.085, 0.02));
+                        push_box(out, &e, T_WHITE, [1.0, 0.25 * glare, 0.15 * glare], light, 1.0);
                     }
                 }
                 Kind::Book => {
@@ -2251,11 +2351,11 @@ impl Game {
 
     fn award(&self, i: usize) -> &'static str {
         let p = &self.players[i];
-        let mut best = 8;
+        let mut best = AWARDS.len() - 1;
         let mut best_v = 0;
         // Boss hits count a little less so the boss doesn't always win.
         for (k, &v) in p.counts.iter().enumerate() {
-            let v = if k == 7 { v / 3 } else { v };
+            let v = if k == BOSS_COUNT { v / 3 } else { v };
             if v > best_v {
                 best_v = v;
                 best = k;
@@ -2393,6 +2493,28 @@ mod tests {
         g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
         g.update(0.016, &[wii(0, false), wii(1, true)], screen, None);
         assert_eq!(g.joined_count(), 1);
+    }
+
+    #[test]
+    fn haunted_portraits_come_off_the_walls_of_the_house() {
+        let track = Track::new();
+        let world = crate::world::generate(&track);
+        let mut g = Game::new(track, world, false, 2);
+        let screen = Vec2::new(1280.0, 720.0);
+        let t_drop = g.track.time_at_z(127.5);
+        let mut zones = vec![];
+        for _ in 0..150 * 60 {
+            g.update(1.0 / 60.0, &[], screen, None);
+            for t in g.targets.iter().filter(|t| t.kind == Kind::Portrait) {
+                zones.push(zone_at(t.home));
+            }
+            if g.state == State::Ride && g.ride_t > t_drop {
+                break;
+            }
+        }
+        assert!(g.spawn_kinds[Kind::Portrait.index()] >= 3, "only {} portraits appeared", g.spawn_kinds[Kind::Portrait.index()]);
+        assert!(zones.iter().all(|z| matches!(z, Zone::Foyer | Zone::Library | Zone::Dining)));
+        assert!(zones.contains(&Zone::Dining), "no portraits in the dining hall");
     }
 
     #[test]
