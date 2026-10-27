@@ -295,7 +295,7 @@ impl App {
                     self.sim_time,
                     self.game.state,
                     self.game.ride_t,
-                    self.game.spawn_stats,
+                    (self.game.spawn_stats, "pumpkin/ghost/bat/book/skel/spider/candy", self.game.spawn_kinds),
                     self.game.players.iter().filter(|p| p.joined).map(|p| p.score).collect::<Vec<_>>()
                 );
                 el.exit();

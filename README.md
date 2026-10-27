@@ -6,7 +6,7 @@ grand foyer, haunted library, dining hall, a big drop into the crypt — and pop
 pumpkins, flying books, waving skeletons and dangling spiders into candy confetti. At the end
 the **Pumpkin King** rises from his pumpkin patch in front of a pair of grand red-and-gold doors
 and blocks the track until the riders beat him. Then the doors swing open and the ride rolls out
-through them, down a lantern-lit hall, to the score screen.
+through them, down a lantern-lit hall that fades away into darkness, to the score screen.
 
 Nobody can lose: there is no health and no game over, just a score per player and a fun
 award on the results screen ("GHOST CATCHER", "BAT BOPPER", "BOSS BUSTER"...).

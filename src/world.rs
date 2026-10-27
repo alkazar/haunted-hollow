@@ -15,7 +15,7 @@ pub const X1: i32 = 40;
 pub const Y0: i32 = -32;
 pub const Y1: i32 = 44;
 pub const Z0: i32 = -32;
-pub const Z1: i32 = 250;
+pub const Z1: i32 = 300;
 const SX: i32 = X1 - X0;
 const SY: i32 = Y1 - Y0;
 const SZ: i32 = Z1 - Z0;
@@ -1187,19 +1187,18 @@ fn boss_doors(w: &mut World) {
             }
         }
     }
-    // Exit hall beyond the doors, lit by lanterns, with a glowing way out at the end.
-    w.room(-7, 7, -18, -5, 214, 249, b::PURPLE, b::STONEBRICK, b::PURPLE);
+    // Exit hall beyond the doors: long enough that its far end is lost in the dark.
+    w.room(-7, 7, -18, -5, 214, 299, b::PURPLE, b::STONEBRICK, b::PURPLE);
     w.fill(-26, 26, -18, -1, 214, 214, b::PURPLE);
-    for z in (218..248).step_by(5) {
+    for z in (218..296).step_by(5) {
         for x in [-6, 6] {
             w.set(x, -11, z, b::LANTERN);
             w.set(x, -14, z + 2, b::BANNER);
             w.set(x, -13, z + 2, b::BANNER);
         }
     }
-    w.fill(-6, 6, -17, -6, 249, 249, b::WINDOW_LIT);
     // Royal red carpet from the lair up to the doors and down the hall.
-    for z in 186..249 {
+    for z in 186..299 {
         for x in -3..=2 {
             let id = if x == -3 || x == 2 { b::GOLD } else { b::CARPET };
             w.set(x, -18, z, id);

@@ -58,12 +58,21 @@ impl Kind {
         match self {
             Kind::Ghost => 0.85,
             Kind::Skeleton => 0.8,
-            Kind::Pumpkin | Kind::Spider => 0.7,
-            Kind::Bat | Kind::Book | Kind::Candy => 0.6,
+            Kind::Pumpkin => 0.7,
+            Kind::Spider => 0.7 * 1.5,
+            Kind::Bat | Kind::Book => 0.6 * 1.5,
+            Kind::Candy => 0.6,
         }
     }
     fn index(self) -> usize {
         self as usize
+    }
+    /// Drawing scale: spiders, bats and books are 50% bigger than their models.
+    fn size(self) -> f32 {
+        match self {
+            Kind::Spider | Kind::Bat | Kind::Book => 1.5,
+            _ => 1.0,
+        }
     }
 }
 
@@ -204,6 +213,8 @@ pub struct Game {
     pub sounds: Vec<SoundEvent>,
     last_spawn_sound: [f32; 8],
     pub spawn_stats: (u32, u32),
+    /// How many of each kind actually appeared this ride (for testing).
+    pub spawn_kinds: [u32; 7],
     lane: usize,
     /// How far the boss doors are open (0 shut .. 1 wide open).
     door_open: f32,
@@ -319,6 +330,7 @@ impl Game {
             sounds: vec![],
             last_spawn_sound: [-9.0; 8],
             spawn_stats: (0, 0),
+            spawn_kinds: [0; 7],
             lane: 0,
             door_open: 0.0,
             retries: vec![],
@@ -382,7 +394,7 @@ impl Game {
             (t_lib + 0.3, t_din - 0.6, vec![(Book, 6), (Ghost, 2), (Bat, 1)], 1.0),
             (t_din + 0.3, t_drop - 0.3, vec![(Skeleton, 5), (Ghost, 2), (Bat, 1)], 1.0),
             (t_drop + 0.2, t_crypt - 0.3, vec![(Bat, 1)], 0.6),
-            (t_crypt + 0.2, t_lair - 0.4, vec![(Spider, 5), (Ghost, 3), (Bat, 2)], 1.0),
+            (t_crypt + 0.2, t_lair - 0.4, vec![(Spider, 5), (Skeleton, 3), (Ghost, 3), (Bat, 2)], 1.0),
             (t_lair, RIDE_SECONDS - 3.0, vec![(Pumpkin, 3), (Bat, 2)], 1.0),
         ];
         let mut rng = Rng::new(4242);
@@ -390,7 +402,8 @@ impl Game {
         // Scheduled a bit denser than v2 (1.25 s) so that ~25% more targets actually
         // appear once spots that aren't clearly visible are skipped.
         let interval = 0.84 / (1.0 + 0.32 * (n - 1.0));
-        for (t0, t1, pool, density) in sections {
+        let zones = [Zone::Graveyard, Zone::Foyer, Zone::Library, Zone::Dining, Zone::Drop, Zone::Crypt, Zone::Lair];
+        for (si, (t0, t1, pool, density)) in sections.into_iter().enumerate() {
             if t1 <= t0 {
                 continue;
             }
@@ -405,6 +418,10 @@ impl Game {
                         break;
                     }
                     pick -= w;
+                }
+                // There were too many ghosts: one in five becomes a different enemy.
+                if kind == Ghost && rng.chance(0.2) {
+                    kind = Self::ghost_substitute(zones[si.min(zones.len() - 1)], &mut rng);
                 }
                 let side = rng.sign();
                 spawns.push(Spawn { t, kind, seed: rng.next_u32() as u64, side });
@@ -504,9 +521,9 @@ impl Game {
             Kind::Ghost => (0.85, 0.75, 0.8),
             Kind::Pumpkin => (0.65, 0.5, 0.9),
             Kind::Skeleton => (0.55, 0.9, 1.0),
-            Kind::Spider => (0.75, 0.35, 0.55),
-            Kind::Book => (0.65, 0.35, 0.6),
-            Kind::Bat => (0.75, 0.4, 0.35),
+            Kind::Spider => (1.1, 0.55, 0.8),
+            Kind::Book => (0.95, 0.5, 0.9),
+            Kind::Bat => (1.1, 0.6, 0.55),
             Kind::Candy => (0.6, 0.35, 0.35),
         }
     }
@@ -572,8 +589,25 @@ impl Game {
     /// life: in open air, never behind walls or props, not overlapping other targets,
     /// and spread out across the screen. Candidates are tested against the camera's
     /// predicted path.
+    /// Something other than a ghost that suits the current part of the ride.
+    fn ghost_substitute(zone: Zone, rng: &mut Rng) -> Kind {
+        let pool: &[Kind] = match zone {
+            Zone::Graveyard => &[Kind::Bat, Kind::Pumpkin],
+            Zone::Foyer => &[Kind::Bat, Kind::Spider, Kind::Book],
+            Zone::Library => &[Kind::Book, Kind::Bat, Kind::Spider],
+            Zone::Dining => &[Kind::Skeleton, Kind::Bat, Kind::Book],
+            Zone::Drop | Zone::Crypt => &[Kind::Spider, Kind::Skeleton, Kind::Bat],
+            Zone::Lair => &[Kind::Pumpkin, Kind::Bat],
+        };
+        pool[rng.int(0, pool.len() as i32 - 1) as usize]
+    }
+
     fn spawn_target(&mut self, kind: Kind, seed: u64, _side_sign: f32, near: Option<Vec3>) -> bool {
         let mut rng = Rng::new(seed);
+        // Pumpkins/skeletons with no floor nearby turn into ghosts; one in five of
+        // those becomes a different enemy instead.
+        let mut pick = Rng::new(seed ^ 0x6a09_e667);
+        let ghost_sub = if near.is_none() && pick.chance(0.2) { Some(Self::ghost_substitute(self.zone, &mut pick)) } else { None };
         let lane = Self::LANES[self.lane % Self::LANES.len()];
         let aspect = self.screen.x / self.screen.y.max(1.0);
         let focal = 1.0 / 35f32.to_radians().tan();
@@ -586,7 +620,15 @@ impl Game {
                 break;
             }
             // No floor for them to stand on near the track? A ghost takes their place.
-            let kind = if attempt >= 32 && matches!(kind, Kind::Pumpkin | Kind::Skeleton) { Kind::Ghost } else { kind };
+            let kind = if attempt >= 32 && matches!(kind, Kind::Pumpkin | Kind::Skeleton) {
+                match ghost_sub {
+                    Some(sub) if attempt < 56 && !matches!(sub, Kind::Pumpkin | Kind::Skeleton) => sub,
+                    Some(_) => Kind::Bat,
+                    None => Kind::Ghost,
+                }
+            } else {
+                kind
+            };
             // Mostly aim for this spawn's lane; every third try anywhere on screen.
             let lane_x = if attempt % 3 == 2 { rng.range(-0.75, 0.75) } else { lane };
             let Some(t) = self.candidate(kind, &mut rng, lane_x, near) else { continue };
@@ -644,6 +686,7 @@ impl Game {
             Some((_, t)) => {
                 self.lane += 1;
                 self.spawn_sound(t.kind, t.home);
+                self.spawn_kinds[t.kind.index()] += 1;
                 self.targets.push(t);
                 self.spawn_stats.0 += 1;
                 true
@@ -1175,8 +1218,16 @@ impl Game {
         if self.state == State::Title {
             self.zone = Zone::Graveyard;
         }
-        let (fc, fr, lamp) = zone_fog(zone_at(f.pos));
-        let k = 1.0 - (-dt * 1.5).exp();
+        let (mut fc, mut fr, lamp) = zone_fog(zone_at(f.pos));
+        let mut rate = 1.5;
+        // Once the boss doors open, the hall beyond fades away into pure darkness.
+        let doors_opening = self.state == State::Victory && self.state_t > DOOR_START;
+        if doors_opening || matches!(self.state, State::Outro | State::Results) {
+            fc = [0.0, 0.0, 0.0];
+            fr = if self.state == State::Victory { (22.0, 72.0) } else { (8.0, 36.0) };
+            rate = if self.state == State::Victory { 1.5 } else { 2.5 };
+        }
+        let k = 1.0 - (-dt * rate).exp();
         for i in 0..3 {
             self.fog[i] += (fc[i] - self.fog[i]) * k;
         }
@@ -1490,7 +1541,7 @@ impl Game {
             let to_cam = self.cam - t.pos;
             let yaw = to_cam.x.atan2(to_cam.z);
             let light = self.world.light_at(t.pos);
-            let base = Mat4::from_translation(t.pos) * Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(s));
+            let base = Mat4::from_translation(t.pos) * Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(s * t.kind.size()));
             let a = t.age;
             // Gentle pulse so little players can tell what to aim at.
             let hl = 0.12 + 0.12 * (a * 6.0 + t.phase).sin();

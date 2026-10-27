@@ -43,7 +43,7 @@ const POINTS: &[([f32; 3], f32)] = &[
     ([0.0, -17.0, 212.0], 1.0), // through the boss doors...
     ([0.0, -17.0, 222.0], 1.0),
     ([0.0, -17.0, 232.0], 1.0),
-    ([0.0, -17.0, 247.0], 1.0), // ...and out down the exit hall
+    ([0.0, -17.0, 296.0], 1.0), // ...and out down the endless exit hall
 ];
 const STOP_INDEX: usize = 29;
 const SUBDIV: usize = 48;
