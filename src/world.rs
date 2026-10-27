@@ -1589,26 +1589,7 @@ fn decorate(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
     banners(w, -13, (-10, -9), (143, 175), 6);
     banners(w, 13, (-10, -9), (146, 175), 6);
 
-    // ---------------- Pumpkin King's lair: candy everywhere!
-    for _ in 0..14 {
-        let x = rng.int(-23, 23);
-        let z = rng.int(181, 212);
-        if x.abs() < 5 {
-            continue;
-        }
-        let h = rng.int(1, 3);
-        for y in 0..h {
-            for dx in -(h - y - 1)..=(h - y - 1) {
-                let id = if rng.chance(0.5) { b::CANDY } else { b::CANDY2 };
-                w.set(x + dx, -17 + y, z, id);
-            }
-        }
-    }
-    for &(x, z) in &[(-12, 186), (12, 188), (-20, 200), (20, 202), (-8, 210), (9, 209)] {
-        w.fill(x, x, -17, -14, z, z, b::FENCE);
-        w.fill(x - 1, x + 1, -13, -11, z, z, b::CANDY2);
-        w.set(x, -12, z, b::CANDY);
-    }
+    // ---------------- Pumpkin King's lair
     scatter(w, rng, 160, (-25, 25), -17, (178, 213), &[b::GRASS], &ground);
     banners(w, -25, (-6, -5), (180, 212), 6);
     banners(w, 25, (-6, -5), (180, 212), 6);
