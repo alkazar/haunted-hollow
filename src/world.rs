@@ -738,6 +738,19 @@ fn pumpkin_spot_free(w: &World, x: i32, y: i32, z: i32) -> bool {
 /// on the fence line, and rows of single headstones facing direction `face` (a cube
 /// face index: 0 +X, 1 -X, 4 +Z, 5 -Z). Each grave gets a dirt plot in front of it.
 #[allow(clippy::too_many_arguments)]
+/// Fenced graveyard plots: x and z extents (inclusive), which way the headstones face,
+/// and where the gate is.
+const GRAVE_PLOTS: [(i32, i32, i32, i32, u8, (i32, i32)); 3] = [
+    (8, 20, 7, 23, 1, (8, 14)),
+    (-23, -13, -7, 13, 0, (-13, 2)),
+    (-10, 0, 26, 32, 5, (-5, 26)),
+];
+
+/// True on or within a block of a grave plot (where a tree would sprout from the graves).
+fn in_grave_plot(x: i32, z: i32) -> bool {
+    GRAVE_PLOTS.iter().any(|&(x0, x1, z0, z1, _, _)| x >= x0 - 1 && x <= x1 + 1 && z >= z0 - 1 && z <= z1 + 1)
+}
+
 fn grave_plot(w: &mut World, rng: &mut Rng, path: &[Vec3], x0: i32, x1: i32, z0: i32, z1: i32, face: u8, gate: (i32, i32)) {
     let (fx, fz) = match face {
         0 => (1, 0),
@@ -846,9 +859,9 @@ fn graveyard(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
 
     // Three small fenced graveyard plots with lantern-lit gates and neat rows of
     // headstones, their "RIP" faces turned toward the ride.
-    grave_plot(w, rng, path, 8, 20, 7, 23, 1, (8, 14));
-    grave_plot(w, rng, path, -23, -13, -7, 13, 0, (-13, 2));
-    grave_plot(w, rng, path, -10, 0, 26, 32, 5, (-5, 26));
+    for &(x0, x1, z0, z1, face, gate) in &GRAVE_PLOTS {
+        grave_plot(w, rng, path, x0, x1, z0, z1, face, gate);
+    }
     // Extra jack-o'-lanterns lining the ride.
     let mut d = 6.0;
     while d < 60.0 {
@@ -874,8 +887,11 @@ fn graveyard(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
         }
         d += 7.0;
     }
-    // Dead trees.
-    for &(tx, tz, h) in &[(-17, 4, 8), (15, 10, 7), (-12, 30, 9), (18, 31, 6), (-20, -4, 7), (12, -3, 6)] {
+    // Dead trees (never growing up out of the graves).
+    for &(tx, tz, h) in &[(-17, 4, 8), (22, 10, 7), (-12, 30, 9), (18, 31, 6), (-20, -4, 7), (12, -3, 6)] {
+        if in_grave_plot(tx, tz) {
+            continue;
+        }
         w.fill(tx, tx, 1, h, tz, tz, b::LOG);
         for &(dx, dz, len) in &[(1, 0, 3), (-1, 1, 2), (0, -1, 3), (-1, 0, 2)] {
             let mut x = tx;
@@ -1452,7 +1468,7 @@ fn decorate(w: &mut World, rng: &mut Rng, path: &[Vec3]) {
         }
         let x = rng.int(-21, 21);
         let z = rng.int(-6, 34);
-        if !near_track(path, x as f32 + 0.5, z as f32 + 0.5, 5.5) && w.is_air(x, 1, z) && w.is_air(x + 1, 2, z) {
+        if !near_track(path, x as f32 + 0.5, z as f32 + 0.5, 5.5) && !in_grave_plot(x, z) && w.is_air(x, 1, z) && w.is_air(x + 1, 2, z) {
             let h = rng.int(5, 8);
             dead_tree(w, rng, x, 1, z, h);
             placed += 1;
@@ -1716,6 +1732,19 @@ fn decorate_walls(w: &mut World, rng: &mut Rng, path: &[Vec3], x0: i32, x1: i32,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_trees_grow_out_of_the_grave_plots() {
+        let track = Track::new();
+        let w = generate(&track);
+        for &(x0, x1, z0, z1, _, _) in &GRAVE_PLOTS {
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    assert!(!(w.get(x, 1, z) == b::LOG && w.get(x, 2, z) == b::LOG), "tree trunk in a grave plot at ({x}, {z})");
+                }
+            }
+        }
+    }
 
     #[test]
     fn porch_pillars_and_lanterns_survive_the_ride_tunnel() {
