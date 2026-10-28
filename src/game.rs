@@ -1726,13 +1726,14 @@ impl Game {
                 }
             }
         }
-        let mut boss_hit = false;
+        // The nearest part of the boss under the crosshair, if any.
+        let mut boss_hit: Option<(Vec3, f32, f32)> = None;
         if let Some(b) = &self.boss {
             if !b.defeated && b.t > 1.5 {
                 for (c, r) in self.boss_hit_spheres(b) {
                     if let Some((sp, w)) = self.project(c) {
-                        if sp.distance(aim) <= self.pixel_radius(r, w) * 0.9 && best.map_or(true, |bb| w < bb.1) {
-                            boss_hit = true;
+                        if sp.distance(aim) <= self.pixel_radius(r, w) * 0.9 && best.map_or(true, |bb| w < bb.1) && boss_hit.map_or(true, |h| w < h.2) {
+                            boss_hit = Some((c, r, w));
                             best = None;
                         }
                     }
@@ -1759,8 +1760,11 @@ impl Game {
             if let Some(src) = self.players[pi].source {
                 self.rumble_requests.push((src, 80));
             }
-        } else if boss_hit {
-            self.hit_boss(pi);
+        } else if let Some((c, r, _)) = boss_hit {
+            // Sparks fly from right under the crosshair, a little in front of that part
+            // (his face is flat and tips toward the riders, so it pokes out past `r`).
+            let at = self.ray_dir(aim).map(|d| self.cam + d * ((c - self.cam).dot(d) - r - 1.5).max(1.0));
+            self.hit_boss(pi, at);
         } else if let Some(dir) = self.ray_dir(aim) {
             // A harmless sparkle where the shot lands nearby.
             let p = self.cam + dir * 6.0;
@@ -1877,7 +1881,8 @@ impl Game {
         }
     }
 
-    fn hit_boss(&mut self, pi: usize) {
+    /// `at` is where the shot landed; without one, the sparks fly from somewhere on his face.
+    fn hit_boss(&mut self, pi: usize, at: Option<Vec3>) {
         let color = PLAYER_COLORS[pi];
         let Some(b) = self.boss.as_mut() else { return };
         b.hp -= 1.0;
@@ -1904,8 +1909,15 @@ impl Game {
         if let Some(src) = p.source {
             self.rumble_requests.push((src, if final_hit { 500 } else { 60 }));
         }
-        let at = pos + Vec3::new(self.rng.range(-2.5, 2.5), self.rng.range(-1.0, 3.0), -3.5);
+        let at = at.unwrap_or_else(|| pos + Vec3::new(self.rng.range(-2.5, 2.5), self.rng.range(-1.0, 3.0), -3.5));
+        let first = self.particles.len();
         self.burst(at, 8, color, false);
+        // None of them fly back into him.
+        let toward = (self.cam - pos).normalize_or_zero();
+        for p in &mut self.particles[first..] {
+            let into = p.vel.dot(toward).min(0.0);
+            p.vel -= toward * into * 2.0;
+        }
         if final_hit {
             if let Some(b) = self.boss.as_mut() {
                 b.defeated = true;
@@ -2799,7 +2811,7 @@ mod tests {
         }
         let before = g.boss.as_ref().unwrap().pos;
         for _ in 0..6 {
-            g.hit_boss(0);
+            g.hit_boss(0, None);
         }
         g.update_boss(0.016);
         let moved = g.boss.as_ref().unwrap().pos.distance(before);
