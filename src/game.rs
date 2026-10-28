@@ -618,8 +618,8 @@ impl Game {
         use Kind::*;
         let sections: Vec<(f32, f32, Vec<(Kind, u32)>, f32)> = vec![
             (3.4, t_foyer - 1.2, vec![(Pumpkin, 5), (Bat, 3), (Ghost, 1)], 1.0),
-            (t_foyer + 0.3, t_lib - 0.6, vec![(Ghost, 5), (Portrait, 3), (Bat, 2)], 1.0),
-            (t_lib + 0.3, t_din - 0.6, vec![(Book, 6), (Portrait, 2), (Ghost, 2), (Bat, 1)], 1.0),
+            (t_foyer + 0.3, t_lib - 0.6, vec![(Ghost, 2), (Portrait, 3), (Spider, 2), (Bat, 2)], 1.0),
+            (t_lib + 0.3, t_din - 0.6, vec![(Book, 8), (Portrait, 4), (Ghost, 1), (Bat, 4)], 1.0),
             (t_din + 0.3, t_drop - 0.3, vec![(Skeleton, 5), (Portrait, 2), (Ghost, 2), (Bat, 1)], 1.0),
             (t_drop + 0.2, t_crypt - 0.3, vec![(Bat, 1)], 0.6),
             (t_crypt + 0.2, t_lair - 0.4, vec![(Spider, 5), (Skeleton, 3), (Ghost, 3), (Bat, 2)], 1.0),
