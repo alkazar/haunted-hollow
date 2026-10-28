@@ -546,10 +546,13 @@ impl Game {
         let unit = (h / 240.0).max(1.0);
         let rows = KEYS.len().div_ceil(KEY_COLS);
         let gap = 4.0 * unit;
-        let cell = ((w * 0.84 - gap * (KEY_COLS - 1) as f32) / KEY_COLS as f32).min((h * 0.46 - gap * (rows - 1) as f32) / rows as f32);
-        let gw = cell * KEY_COLS as f32 + gap * (KEY_COLS - 1) as f32;
+        // Fill the space down to the riders' panels; keys may be wider than tall on wide screens.
+        let ch = (h * 0.56 - gap * (rows - 1) as f32) / rows as f32;
+        let cw = ((w * 0.9 - gap * (KEY_COLS - 1) as f32) / KEY_COLS as f32).min(ch * 1.6);
+        let ch = ch.min(cw);
+        let gw = cw * KEY_COLS as f32 + gap * (KEY_COLS - 1) as f32;
         let (x0, y0) = ((w - gw) * 0.5, h * 0.2);
-        (0..KEYS.len()).map(|k| (x0 + (k % KEY_COLS) as f32 * (cell + gap), y0 + (k / KEY_COLS) as f32 * (cell + gap), cell, cell)).collect()
+        (0..KEYS.len()).map(|k| (x0 + (k % KEY_COLS) as f32 * (cw + gap), y0 + (k / KEY_COLS) as f32 * (ch + gap), cw, ch)).collect()
     }
 
     fn key_at(&self, p: Vec2) -> Option<usize> {
