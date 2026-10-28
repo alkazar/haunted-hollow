@@ -223,6 +223,9 @@ struct Boss {
     max_hp: f32,
     pos: Vec3,
     t: f32,
+    /// Side-to-side sway, advanced at a speed that rises with rage. (Using `t * speed`
+    /// would make him jump sideways whenever a hit raises the speed.)
+    sway: f32,
     flash: f32,
     wobble: f32,
     summons_done: u32,
@@ -1276,6 +1279,7 @@ impl Game {
                         max_hp: hp,
                         pos: Vec3::new(0.0, -26.0, 200.0),
                         t: 0.0,
+                        sway: 0.0,
                         flash: 0.0,
                         wobble: 0.0,
                         summons_done: 0,
@@ -1798,7 +1802,8 @@ impl Game {
         b.wobble = (b.wobble - dt * 2.0).max(0.0);
         let rage = 1.0 - b.hp / b.max_hp;
         let rise = smooth(b.t / 2.5);
-        let x = (b.t * (0.45 + rage * 0.5)).sin() * (7.5 + rage * 2.0) * smooth((b.t - 2.0) / 2.0);
+        b.sway += dt * (0.45 + rage * 0.5);
+        let x = b.sway.sin() * (7.5 + rage * 2.0) * smooth((b.t - 2.0) / 2.0);
         let y = -26.0 + (16.5 + (b.t * 1.1).sin() * 1.3) * rise;
         let z = 200.0 + (b.t * 0.37).sin() * 2.5 - rage * 2.0;
         b.pos = Vec3::new(x, y, z);
@@ -2854,6 +2859,29 @@ mod tests {
             pause: false,
             quit_to_title: false,
         }
+    }
+
+    #[test]
+    fn the_boss_does_not_jump_when_hit() {
+        let track = Track::new();
+        let world = crate::world::generate(&track);
+        let mut g = Game::new(track, world, false, 0);
+        g.update(0.016, &[wii(0, true)], Vec2::new(1280.0, 720.0), None);
+        g.skip_to_boss();
+        g.ride_t = RIDE_SECONDS;
+        g.update(0.016, &[wii(0, false)], Vec2::new(1280.0, 720.0), None);
+        assert_eq!(g.state, State::Boss);
+        // Well into the fight, a burst of hits (several riders at once) mustn't move him.
+        for _ in 0..(40.0 / 0.016) as usize {
+            g.update_boss(0.016);
+        }
+        let before = g.boss.as_ref().unwrap().pos;
+        for _ in 0..6 {
+            g.hit_boss(0);
+        }
+        g.update_boss(0.016);
+        let moved = g.boss.as_ref().unwrap().pos.distance(before);
+        assert!(moved < 0.5, "boss jumped {moved:.2} m in one frame");
     }
 
     #[test]
