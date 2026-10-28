@@ -2016,6 +2016,11 @@ impl Game {
                 let e = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s));
                 push_box(out, &e, T_WHITE, [1.0, 0.6 - 0.3 * u, 0.15], Vec3::ONE, 1.0);
             }
+            // Smoke above the flames, cut short by a mantel or ceiling.
+            let room = (1..=8).map(|k| k as f32 * 0.25).find(|&dy| self.world.solid_at(f + Vec3::Y * (0.9 + dy))).unwrap_or(2.0);
+            if room > 0.5 {
+                push_wisps(out, f + Vec3::Y * 0.9, (room - 0.25).min(1.3), seed, t, [0.4, 0.38, 0.36]);
+            }
         }
 
         // Boiling brew: the surface heaves, bubbles swell and pop, and green steam curls up.
@@ -2040,20 +2045,7 @@ impl Game {
                 let b = Mat4::from_translation(p) * Mat4::from_scale(Vec3::new(s, s * 0.8, s));
                 push_box(out, &b, T_SLIME, [0.75 + 0.25 * u; 3], Vec3::ONE, 1.0);
             }
-            // Wisps of steam drifting up and fading out.
-            for k in 0..4 {
-                let ph = seed * 1.3 + k as f32 * 2.2;
-                let u = (t * 0.45 + ph * 0.29).fract();
-                let p = c + Vec3::new(
-                    (ph * 4.0).sin() * 0.2 + (t * 1.5 + ph).sin() * 0.1 * u,
-                    0.8 + u * 1.3,
-                    (ph * 2.0).cos() * 0.2,
-                );
-                let s = 0.08 + 0.14 * u;
-                let g = 0.75 * (1.0 - u);
-                let w = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s));
-                push_box(out, &w, T_WHITE, [0.25 * g, g, 0.4 * g], Vec3::ONE, 1.0);
-            }
+            push_wisps(out, c + Vec3::Y * 0.8, 1.3, seed, t, [0.19, 0.75, 0.3]);
         }
 
         if self.zone == Zone::Graveyard {
@@ -3073,5 +3065,18 @@ mod tests {
             g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
         }
         assert_eq!(g.state, State::Ride);
+    }
+}
+
+/// Wisps of steam or smoke drifting up from `at` by `rise` and fading out.
+fn push_wisps(out: &mut Vec<Vertex>, at: Vec3, rise: f32, seed: f32, t: f32, color: [f32; 3]) {
+    for k in 0..4 {
+        let ph = seed * 1.3 + k as f32 * 2.2;
+        let u = (t * 0.45 + ph * 0.29).fract();
+        let p = at + Vec3::new((ph * 4.0).sin() * 0.2 + (t * 1.5 + ph).sin() * 0.1 * u, u * rise, (ph * 2.0).cos() * 0.2);
+        let s = 0.08 + 0.14 * u;
+        let g = 1.0 - u;
+        let w = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s));
+        push_box(out, &w, T_WHITE, color.map(|c| c * g), Vec3::ONE, 1.0);
     }
 }
