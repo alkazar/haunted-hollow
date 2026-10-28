@@ -72,15 +72,6 @@ impl Ui {
         self.text(s, x, y, scale, c, align);
     }
 
-    /// Rectangle with stepped (pixel-art) rounded corners of radius `r`.
-    pub fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c: [f32; 4]) {
-        let r = r.min(w * 0.5).min(h * 0.5);
-        self.rect(x + r, y, w - 2.0 * r, h, c);
-        self.rect(x, y + r, w, h - 2.0 * r, c);
-        let q = r * 0.35;
-        self.rect(x + q, y + q, w - 2.0 * q, h - 2.0 * q, c);
-    }
-
     /// Frame of a panel with a darker fill.
     pub fn panel(&mut self, x: f32, y: f32, w: f32, h: f32, fill: [f32; 4], border: [f32; 4]) {
         let b = self.unit;

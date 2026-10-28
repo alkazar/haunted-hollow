@@ -444,11 +444,11 @@ impl Game {
 
     /// Screen position of a player's practice target (one per score-card column).
     fn practice_pos(&self, i: usize) -> Vec2 {
-        Vec2::new((i as f32 + 0.5) * self.screen.x / 4.0, self.screen.y * 0.7)
+        Vec2::new((i as f32 + 0.5) * self.screen.x / 4.0, self.screen.y * 0.6)
     }
 
     fn practice_radius(&self) -> f32 {
-        (self.screen.y / 240.0).max(1.0) * 18.0
+        (self.screen.y / 240.0).max(1.0) * 28.0
     }
 
     pub fn start_ride(&mut self) {
@@ -2438,113 +2438,7 @@ impl Game {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
         let t = self.state_t;
         let white = [1.0, 1.0, 1.0, 1.0];
-        let orange = [1.0, 0.6, 0.1, 1.0];
-        // Layout first, so the backing panel can be sized to fit everything on it.
-        let u = (unit * 1.5).min(w / 170.0); // the remote's own pixel size
-        let (rw, rh) = (100.0 * u, 16.0 * u);
-        let rx = w * 0.5 - rw * 0.6;
-        let top = h * 0.05;
-        let ry = top + 28.0 * unit + 16.0 * u; // room for the heading and the A badge above the remote
-        let hint_y = ry + rh + 17.0 * u;
-        let panel_h = hint_y + 26.0 * unit - top;
-        ui.rect(0.0, top, w, panel_h, [0.02, 0.0, 0.04, 0.85]);
-        ui.rect(0.0, top, w, unit, [1.0, 0.6, 0.1, 0.6]);
-        ui.rect(0.0, top + panel_h - unit, w, unit, [1.0, 0.6, 0.1, 0.6]);
-        let head = if self.debug { "CLICK TO SHOOT!" } else { "PRESS A OR PULL B TO SHOOT!" };
-        ui.text_fit(head, w * 0.5, top + 7.0 * unit, 2.2, w * 0.9, orange, Align::Center);
-
-        // A Wii Remote side on, pointing right at the screen, pressing A and B once a second.
-        let since = t.fract();
-        let squeeze = since < 0.18;
-        let glow = 0.75 + 0.25 * (t * 8.0).sin();
-        let lit = [1.0, 0.55 * glow, 0.1, 1.0];
-        let outline = [0.22, 0.22, 0.27, 1.0];
-        let shade = |k: f32| [0.97 * k, 0.97 * k, 0.99 * k, 1.0];
-        // Wrist strap hanging from the back end (behind the body).
-        for k in 0..16 {
-            let a = k as f32 / 15.0 * std::f32::consts::PI;
-            let (px, py) = (rx - 3.0 * u - a.sin() * 5.0 * u, ry + rh * 0.6 + (1.0 - a.cos()) * 6.0 * u);
-            ui.rect(px, py, 1.4 * u, 1.4 * u, [0.55, 0.6, 0.7, 1.0]);
-        }
-        ui.round_rect(rx - 4.0 * u, ry + rh * 0.45, 4.0 * u, 3.0 * u, u, [0.35, 0.37, 0.45, 1.0]);
-        // Top buttons stand proud of the body, so draw them first: 1 and 2 at the back,
-        // then - HOME +, the big A, and the D-pad near the front.
-        for k in 0..2 {
-            let bx = rx + (16.0 + k as f32 * 8.0) * u;
-            ui.round_rect(bx - u * 0.5, ry - 2.5 * u, 5.0 * u, 3.5 * u, u, outline);
-            ui.rect(bx, ry - 2.0 * u, 4.0 * u, 2.0 * u, shade(0.82));
-        }
-        for k in 0..3 {
-            let bx = rx + (44.0 + k as f32 * 6.0) * u;
-            let c = if k == 1 { [0.35, 0.6, 1.0, 1.0] } else { shade(0.8) };
-            ui.round_rect(bx - u * 0.5, ry - 1.8 * u, 4.0 * u, 2.8 * u, u, outline);
-            ui.rect(bx, ry - 1.3 * u, 3.0 * u, 1.3 * u, c);
-        }
-        // The A button glows like the trigger and sinks in on each press.
-        let ax = rx + 66.0 * u;
-        let sink = if squeeze { 1.5 * u } else { 0.0 };
-        ui.round_rect(ax - 0.5 * u, ry - 3.5 * u + sink, 9.0 * u, 4.5 * u - sink, 2.0 * u, outline);
-        ui.round_rect(ax + 0.5 * u, ry - 2.7 * u + sink, 7.0 * u, 3.0 * u - sink, 1.5 * u, lit);
-        ui.rect(ax + 1.5 * u, ry - 2.3 * u + sink, 3.0 * u, 0.8 * u, [1.0, 0.85, 0.5, 1.0]);
-        let (alx, aly) = (ax + 4.0 * u, ry - 3.5 * u - 12.0 * u);
-        ui.round_rect(alx - 4.5 * u, aly - 0.5 * u, 9.0 * u, 9.0 * u, 2.5 * u, [0.0, 0.0, 0.0, 1.0]);
-        ui.round_rect(alx - 4.0 * u, aly, 8.0 * u, 8.0 * u, 2.0 * u, [1.0, 0.6 * glow + 0.1, 0.1, 1.0]);
-        let abs = 8.0 * u / (8.0 * unit) * 0.8;
-        ui.text("A", alx, aly + 4.0 * u - 4.0 * abs * unit, abs, white, Align::Center);
-        ui.rect(alx - 0.5 * u, aly + 8.5 * u, u, 2.5 * u, orange);
-        let dx = rx + 80.0 * u;
-        ui.round_rect(dx - 0.5 * u, ry - 3.0 * u, 10.0 * u, 4.0 * u, u, outline);
-        ui.rect(dx + 0.5 * u, ry - 2.2 * u, 8.0 * u, 2.4 * u, [0.32, 0.32, 0.38, 1.0]);
-        ui.rect(dx + 3.0 * u, ry - 3.6 * u, 4.0 * u, 1.5 * u, outline);
-        ui.rect(dx + 3.5 * u, ry - 3.0 * u, 3.0 * u, 1.0 * u, [0.4, 0.4, 0.46, 1.0]);
-        // Body: rounded, lit from above, with a black IR cap on the front.
-        ui.round_rect(rx - u, ry - u, rw + 2.0 * u, rh + 2.0 * u, 4.5 * u, outline);
-        ui.round_rect(rx, ry, rw, rh, 3.5 * u, shade(0.9));
-        ui.rect(rx + 3.0 * u, ry + 1.0 * u, rw - 12.0 * u, 3.0 * u, shade(1.0));
-        ui.rect(rx + 2.0 * u, ry + rh - 6.0 * u, rw - 9.0 * u, 3.0 * u, shade(0.8));
-        ui.rect(rx + 3.5 * u, ry + rh - 3.0 * u, rw - 11.0 * u, 2.0 * u, shade(0.68));
-        ui.round_rect(rx + rw - 8.0 * u, ry, 8.0 * u, rh, 3.5 * u, [0.07, 0.05, 0.1, 1.0]);
-        ui.rect(rx + rw - 8.0 * u, ry, 3.0 * u, rh, [0.07, 0.05, 0.1, 1.0]);
-        ui.rect(rx + rw - 5.5 * u, ry + 2.5 * u, 1.5 * u, rh * 0.35, [0.35, 0.28, 0.5, 1.0]);
-        // Expansion port at the back and the four player lights, the first one lit.
-        ui.rect(rx, ry + 5.0 * u, 1.5 * u, rh - 10.0 * u, [0.3, 0.3, 0.35, 1.0]);
-        for k in 0..4 {
-            let lit = k == 0 && (t * 2.0).fract() < 0.7;
-            let c = if lit { [0.4, 0.8, 1.0, 1.0] } else { [0.62, 0.66, 0.75, 1.0] };
-            ui.rect(rx + (5.0 + k as f32 * 3.5) * u, ry + 6.5 * u, 2.0 * u, 1.2 * u, c);
-        }
-
-        // The B trigger sits in a recess underneath, below the D-pad, and glows.
-        let drop = if squeeze { 1.5 } else { 5.0 } * u;
-        let bx = rx + 78.0 * u;
-        let by = ry + rh;
-        ui.rect(bx - 7.0 * u, by - 0.5 * u, 14.0 * u, 1.5 * u, [0.3, 0.3, 0.36, 1.0]);
-        ui.round_rect(bx - 5.0 * u, by - 0.5 * u, 10.0 * u, drop + 1.5 * u, 1.5 * u, outline);
-        ui.round_rect(bx - 4.0 * u, by, 8.0 * u, drop, 1.2 * u, [1.0, 0.55 * glow, 0.1, 1.0]);
-        ui.rect(bx - 3.0 * u, by + 0.5 * u, 2.0 * u, (drop - 1.5 * u).max(0.5 * u), [1.0, 0.85, 0.5, 1.0]);
-        // "B" badge pointing at the trigger.
-        let (lx, ly) = (bx + 8.0 * u, by + 2.0 * u);
-        ui.rect(bx + 4.5 * u, ly + 3.0 * u, 3.5 * u, u, orange);
-        ui.round_rect(lx - 0.5 * u, ly - 0.5 * u, 9.0 * u, 9.0 * u, 2.5 * u, [0.0, 0.0, 0.0, 1.0]);
-        ui.round_rect(lx, ly, 8.0 * u, 8.0 * u, 2.0 * u, [1.0, 0.6 * glow + 0.1, 0.1, 1.0]);
-        let bs = 8.0 * u / (8.0 * unit) * 0.8;
-        ui.text("B", lx + 4.0 * u, ly + 4.0 * u - 4.0 * bs * unit, bs, white, Align::Center);
-        // The shot: a dotted beam out of the front and a little pop on every squeeze.
-        let bx0 = rx + rw + 4.0 * u;
-        let beam_y = ry + rh * 0.5;
-        for k in 0..5 {
-            let x = bx0 + k as f32 * 6.0 * u;
-            let a = if since < 0.4 { 1.0 - since / 0.4 } else { 0.25 };
-            ui.rect(x, beam_y - u, 3.0 * u, 2.0 * u, [1.0, 0.9, 0.5, a]);
-        }
-        let star = if since < 0.3 { 1.0 + since * 3.0 } else { 0.0 };
-        if star > 0.0 {
-            ui.sprite(T_STAR, bx0 + 36.0 * u, beam_y, 12.0 * u * star, [1.0, 0.85, 0.3, 1.0 - since / 0.3]);
-        }
-        let hint = if self.debug { "AIM WITH THE MOUSE - HOLD TO RAPID FIRE" } else { "POINT AT THE SCREEN - HOLD A OR B TO RAPID FIRE" };
-        ui.text_fit(hint, w * 0.5, hint_y, 1.0, w * 0.9, [0.9, 0.9, 1.0, 1.0], Align::Center);
-        ui.text_fit("EVERYONE SHOOT YOUR TARGET TO START THE RIDE!", w * 0.5, hint_y + 11.0 * unit, 1.2, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
-
+        ui.text_fit("SHOOT YOUR TARGET TO START!", w * 0.5, h * 0.18, 2.4, w * 0.9, [1.0, 0.6, 0.1, 1.0], Align::Center);
         // One practice target per player, in their colour.
         let r = self.practice_radius();
         for (i, p) in self.players.iter().enumerate() {
@@ -2574,10 +2468,6 @@ impl Game {
                     ui.text_fit("READY!", pos.x, pos.y - 4.0 * sc * unit, sc, w * 0.22, [c[0], c[1], c[2], k], Align::Center);
                 }
             }
-        }
-        if t > 4.0 {
-            let key = if self.debug { "PRESS + OR ENTER TO SKIP" } else { "PRESS + TO SKIP" };
-            ui.text_fit(key, w * 0.5, h * 0.9, 0.8, w * 0.9, [0.7, 0.7, 0.8, 0.8], Align::Center);
         }
     }
 
