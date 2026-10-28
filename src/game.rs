@@ -2097,9 +2097,13 @@ impl Game {
                 Kind::Candy => {
                     let mm = Mat4::from_translation(t.pos) * Mat4::from_rotation_y(a * 5.0) * Mat4::from_rotation_x((a * 3.0).sin() * 0.5) * Mat4::from_scale(Vec3::splat(s)) * Mat4::from_translation(-Vec3::Y * 0.26);
                     m.candy.draw(out, &mm, light, hl, None);
-                    if (a * 10.0) as i32 % 2 == 0 {
-                        let sp = t.pos + Vec3::new((a * 7.0).sin() * 0.7, (a * 9.0).cos() * 0.4, (a * 5.0).cos() * 0.7);
-                        push_box(out, &(Mat4::from_translation(sp) * Mat4::from_scale(Vec3::splat(0.08))), T_WHITE, [1.0, 0.95, 0.6], light, 1.0);
+                    // Pink, cyan and lime sparkles, each twinkling on its own orbit.
+                    for (k, c) in [[1.0, 0.25, 0.8], [0.25, 0.95, 1.0], [0.6, 1.0, 0.25]].into_iter().enumerate() {
+                        let b = a + k as f32 * 2.1;
+                        if (b * 10.0) as i32 % 2 == 0 {
+                            let sp = t.pos + Vec3::new((b * 7.0).sin() * 0.7, (b * 9.0).cos() * 0.4, (b * 5.0).cos() * 0.7);
+                            push_box(out, &(Mat4::from_translation(sp) * Mat4::from_scale(Vec3::splat(0.08))), T_WHITE, c, light, 1.0);
+                        }
                     }
                 }
                 Kind::Skeleton => {
