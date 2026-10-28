@@ -992,7 +992,7 @@ impl Game {
         let dir = up.cross(right).normalize_or_zero();
         let aspect = self.screen.x / self.screen.y.max(1.0);
         let focal = 1.0 / 35f32.to_radians().tan();
-        let depth = if near.is_some() { rng.range(9.0, 15.0) } else { rng.range(6.5, 15.0) };
+        let depth = if near.is_some() { rng.range(8.0, 11.0) } else { rng.range(6.5, 15.0) };
         let sx = (lane_x + rng.range(-0.12, 0.12)).clamp(-0.78, 0.78);
         let sy = rng.range(-0.25, 0.5);
         let mut base = eye + dir * depth + right * (sx * depth * aspect / focal) + up * (sy * depth / focal);
