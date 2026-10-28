@@ -1207,9 +1207,7 @@ impl Game {
         if self.paused {
             if inputs.iter().any(|i| i.quit_to_title) {
                 self.paused = false;
-                self.state = State::Title;
-                self.state_t = 0.0;
-                self.title_join_t = None;
+                self.go_to_title();
             }
             return;
         }
