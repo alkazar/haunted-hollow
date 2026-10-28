@@ -100,6 +100,8 @@ const SWARM_BATCH: usize = 3;
 const BOSS_COUNT: usize = 8;
 /// Seconds a haunted portrait spends peeling off its wall before it flies.
 const PORTRAIT_PEEL: f32 = 0.8;
+/// Accuracy bonus for a rider who hits with every shot.
+const MAX_AIM_BONUS: u32 = 5000;
 /// Seconds into a guard cycle at which the Pumpkin King's hands are back down.
 const GUARD_END: f32 = 2.15;
 /// Most seconds a target may stay past its life while the cart closes in on it.
@@ -167,6 +169,8 @@ pub struct Player {
     shown: f32,
     pub hits: u32,
     pub shots: u32,
+    /// Accuracy bonus, added to `score` when the results come up.
+    bonus: u32,
     aim: Vec2,
     aim_target: Vec2,
     aim_visible: bool,
@@ -188,6 +192,7 @@ impl Player {
             shown: 0.0,
             hits: 0,
             shots: 0,
+            bonus: 0,
             aim: Vec2::ZERO,
             aim_target: Vec2::ZERO,
             aim_visible: false,
@@ -204,6 +209,7 @@ impl Player {
         self.shown = 0.0;
         self.hits = 0;
         self.shots = 0;
+        self.bonus = 0;
         self.counts = [0; 9];
     }
 }
@@ -1355,6 +1361,10 @@ impl Game {
                 if self.state_t > OUTRO_TIME {
                     self.state = State::Results;
                     self.state_t = 0.0;
+                    for p in self.players.iter_mut().filter(|p| p.joined) {
+                        p.bonus = accuracy_bonus(p.hits, p.shots);
+                        p.score += p.bonus;
+                    }
                 }
             }
             State::Results => {
@@ -2578,9 +2588,19 @@ impl Game {
             let asc = (line * 0.22).min(col_name / ui.text_width(award, 1.0));
             ui.text(award, nx, y + row_h * 0.6, asc, [1.0, 1.0, 1.0, appear], Align::Left);
             let rx = x + rw - pad;
-            let score = format!("{}", p.score);
+            // The accuracy bonus pops up beside the score, which then counts up to include it.
+            let row_t = self.state_t - 0.4 * (order.len() - rank) as f32;
+            let tally = smooth((row_t - 0.8) / 0.8);
+            let score = format!("{}", p.score - p.bonus + (p.bonus as f32 * tally) as u32);
             let ss = (line * 0.36).min(col_score / ui.text_width(&score, 1.0));
             ui.text(&score, rx, y + row_h * 0.12, ss, [1.0, 1.0, 1.0, appear], Align::Right);
+            if p.bonus > 0 && row_t > 0.5 {
+                let k = smooth((row_t - 0.5) / 0.25);
+                let tag = format!("+{} AIM BONUS", p.bonus);
+                let bs = (line * 0.16).min(col_score * 0.5 / ui.text_width(&tag, 1.0));
+                let bx = rx - ui.text_width(&score, ss) - pad * 0.6;
+                ui.text(&tag, bx, y + row_h * 0.12 + 8.0 * (ss - bs) * unit * 0.5, bs, [1.0, 0.85, 0.3, k], Align::Right);
+            }
             let acc = if p.shots > 0 { p.hits * 100 / p.shots } else { 0 };
             let stats = format!("{} POPS {}% AIM", p.hits, acc);
             let sts = (line * 0.18).min(col_score / ui.text_width(&stats, 1.0));
@@ -3027,6 +3047,26 @@ mod tests {
         }
         assert_eq!(g.state, State::Ride);
     }
+    #[test]
+    fn the_aim_bonus_starts_at_half_accuracy_and_climbs_ever_faster() {
+        assert_eq!(accuracy_bonus(0, 0), 0);
+        assert_eq!(accuracy_bonus(40, 100), 0);
+        assert_eq!(accuracy_bonus(50, 100), 0);
+        assert_eq!(accuracy_bonus(75, 100), MAX_AIM_BONUS / 4);
+        assert_eq!(accuracy_bonus(100, 100), MAX_AIM_BONUS);
+        let step = |a: u32| accuracy_bonus(a + 5, 100) - accuracy_bonus(a, 100);
+        assert!(step(90) > step(60));
+    }
+}
+
+/// Bonus points for accuracy: nothing at 50% or below, then rising ever faster to
+/// `MAX_AIM_BONUS` for not missing a single shot.
+fn accuracy_bonus(hits: u32, shots: u32) -> u32 {
+    if shots == 0 {
+        return 0;
+    }
+    let over = ((hits as f32 / shots as f32 - 0.5) / 0.5).clamp(0.0, 1.0);
+    ((MAX_AIM_BONUS as f32 * over * over) / 10.0).round() as u32 * 10
 }
 
 /// Wisps of steam or smoke drifting up from `at` by `rise` and fading out.
