@@ -1726,16 +1726,14 @@ impl Game {
                 }
             }
         }
-        // The nearest part of the boss under the crosshair, if any.
-        let mut boss_hit: Option<(Vec3, f32, f32)> = None;
+        let mut boss_hit: Option<(Vec3, f32)> = None;
         if let Some(b) = &self.boss {
             if !b.defeated && b.t > 1.5 {
-                for (c, r) in self.boss_hit_spheres(b) {
-                    if let Some((sp, w)) = self.project(c) {
-                        if sp.distance(aim) <= self.pixel_radius(r, w) * 0.9 && best.map_or(true, |bb| w < bb.1) && boss_hit.map_or(true, |h| w < h.2) {
-                            boss_hit = Some((c, r, w));
-                            best = None;
-                        }
+                let (c, r) = Self::boss_hit_sphere(b);
+                if let Some((sp, w)) = self.project(c) {
+                    if sp.distance(aim) <= self.pixel_radius(r, w) * 0.9 && best.map_or(true, |bb| w < bb.1) {
+                        boss_hit = Some((c, r));
+                        best = None;
                     }
                 }
             }
@@ -1760,8 +1758,8 @@ impl Game {
             if let Some(src) = self.players[pi].source {
                 self.rumble_requests.push((src, 80));
             }
-        } else if let Some((c, r, _)) = boss_hit {
-            // Sparks fly from right under the crosshair, a little in front of that part
+        } else if let Some((c, r)) = boss_hit {
+            // Sparks fly from right under the crosshair, a little in front of his head
             // (his face is flat and tips toward the riders, so it pokes out past `r`).
             let at = self.ray_dir(aim).map(|d| self.cam + d * ((c - self.cam).dot(d) - r - 1.5).max(1.0));
             self.hit_boss(pi, at);
@@ -1829,9 +1827,9 @@ impl Game {
         (head, [l, r])
     }
 
-    fn boss_hit_spheres(&self, b: &Boss) -> Vec<(Vec3, f32)> {
-        let (head, hands) = Self::boss_parts(b);
-        vec![(head + Vec3::Y * 0.5, 3.8), (hands[0], 1.2), (hands[1], 1.2)]
+    /// Only his head can be hurt; shots at his hands do nothing.
+    fn boss_hit_sphere(b: &Boss) -> (Vec3, f32) {
+        (b.pos + Vec3::Y * 0.5, 3.8)
     }
 
     fn update_boss(&mut self, dt: f32) {
