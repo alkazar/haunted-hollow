@@ -1727,13 +1727,27 @@ impl Game {
             }
         }
         let mut boss_hit: Option<(Vec3, f32)> = None;
+        // A hand in the way stops the shot (his hands can't be hurt).
+        let mut blocked: Option<Vec3> = None;
         if let Some(b) = &self.boss {
             if !b.defeated && b.t > 1.5 {
                 let (c, r) = Self::boss_hit_sphere(b);
+                let mut head_w = f32::MAX;
                 if let Some((sp, w)) = self.project(c) {
                     if sp.distance(aim) <= self.pixel_radius(r, w) * 0.9 && best.map_or(true, |bb| w < bb.1) {
                         boss_hit = Some((c, r));
+                        head_w = w;
                         best = None;
+                    }
+                }
+                for h in self.boss_parts(b).1 {
+                    if let Some((sp, w)) = self.project(h) {
+                        if sp.distance(aim) <= self.pixel_radius(1.2, w) && w < head_w && best.map_or(true, |bb| w < bb.1) {
+                            blocked = Some(h);
+                            boss_hit = None;
+                            best = None;
+                            head_w = w;
+                        }
                     }
                 }
             }
@@ -1763,6 +1777,15 @@ impl Game {
             // (his face is flat and tips toward the riders, so it pokes out past `r`).
             let at = self.ray_dir(aim).map(|d| self.cam + d * ((c - self.cam).dot(d) - r - 1.5).max(1.0));
             self.hit_boss(pi, at);
+        } else if let (Some(h), Some(dir)) = (blocked, self.ray_dir(aim)) {
+            // Tink! A few white sparks glance off the front of the hand.
+            let p = self.cam + dir * ((h - self.cam).dot(dir) - 1.2).max(1.0);
+            let pan = (aim.x / self.screen.x * 2.0 - 1.0) * 0.8;
+            self.sfx(Sfx::Ding, 0.35, pan, 0.6);
+            for _ in 0..8 {
+                let v = Vec3::new(self.rng.range(-1.0, 1.0), self.rng.range(-0.5, 1.0), self.rng.range(-1.0, 0.0));
+                self.particles.push(Particle { pos: p, vel: v * 2.5, color: [1.0, 1.0, 0.9], size: 0.07, age: 0.0, life: 0.4, glow: 1.0, gravity: 4.0 });
+            }
         } else if let Some(dir) = self.ray_dir(aim) {
             // A harmless sparkle where the shot lands nearby.
             let p = self.cam + dir * 6.0;
@@ -1819,12 +1842,31 @@ impl Game {
 
     // ================================================================= boss
 
-    fn boss_parts(b: &Boss) -> (Vec3, [Vec3; 2]) {
+    fn boss_parts(&self, b: &Boss) -> (Vec3, [Vec3; 2]) {
         let t = b.t;
         let head = b.pos;
         let l = head + Vec3::new(-6.2 + (t * 2.0).sin() * 0.6, -2.0 + (t * 3.1).sin() * 1.2, -1.5);
         let r = head + Vec3::new(6.2 + (t * 2.3).cos() * 0.6, -2.0 + (t * 2.7).cos() * 1.2, -1.5);
-        (head, [l, r])
+        // Now and then he covers his face, holding his hands on the line between it and
+        // the riders (who look up at him, so a hand at face height would look too high).
+        let g = Self::boss_guard(b);
+        let shake = Vec3::Y * (t * 9.0).sin() * 0.1;
+        let face = head + Vec3::Y * 0.4;
+        let to_cam = (self.cam - face).normalize_or_zero();
+        let side = to_cam.cross(Vec3::Y).normalize_or_zero();
+        let gl = face + to_cam * 5.5 - side * 1.6 + shake;
+        let gr = face + to_cam * 5.5 + side * 1.6 - shake;
+        (head, [l.lerp(gl, g), r.lerp(gr, g)])
+    }
+
+    /// How far his hands are raised to guard his face (0 to 1): for about two seconds
+    /// in every six, once the fight is under way.
+    fn boss_guard(b: &Boss) -> f32 {
+        if b.defeated || b.t < 5.0 {
+            return 0.0;
+        }
+        let u = (b.t - 5.0).rem_euclid(6.0);
+        smooth(u / 0.35) * (1.0 - smooth((u - 1.8) / 0.35))
     }
 
     /// Only his head can be hurt; shots at his hands do nothing.
@@ -2206,7 +2248,7 @@ impl Game {
 
         // The Pumpkin King.
         if let Some(b) = &self.boss {
-            let (head, hands) = Self::boss_parts(b);
+            let (head, hands) = self.boss_parts(b);
             let mut s = 1.0;
             let mut spin = 0.0;
             if self.state == State::Victory || self.state == State::Outro {
