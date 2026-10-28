@@ -811,7 +811,17 @@ impl Game {
             Kind::Skeleton => t.home,
             Kind::Spider => t.home + Vec3::Y * (a * 2.0).sin() * 0.12,
             Kind::Book => t.home + Vec3::new((a * 1.6 + ph).cos() * 0.9, (a * 3.0).sin() * 0.3, (a * 1.6 + ph).sin() * 0.9),
-            Kind::Bat => t.a.lerp(t.b, (a / t.life).min(1.0)) + Vec3::Y * (a * 5.0 + ph).sin() * 0.4,
+            // Darts along in bursts while jinking about on every axis.
+            Kind::Bat => {
+                let u = (a / t.life).min(1.0);
+                let u = u + (u * std::f32::consts::TAU * 3.0 + ph).sin() * 0.04;
+                let jink = Vec3::new(
+                    (a * 4.3 + ph).sin() * 0.35 + (a * 11.0 + ph * 2.0).sin() * 0.15,
+                    (a * 5.0 + ph).sin() * 0.4 + (a * 13.7 + ph).sin() * 0.2,
+                    (a * 3.7 + ph * 1.5).cos() * 0.3,
+                );
+                t.a.lerp(t.b, u) + jink
+            }
             Kind::Candy => t.a.lerp(t.b, (a / t.life).min(1.0)) + Vec3::Y * (a * 6.0).sin() * 0.3,
             // Hangs just off its wall while it peels away, then glides at the riders.
             Kind::Portrait => {
@@ -1063,7 +1073,7 @@ impl Game {
                 if near.is_none() {
                     base.y = base.y.clamp(ty + 1.8, ty + 4.8);
                 }
-                let span = rng.range(2.0, 3.5);
+                let span = if kind == Kind::Bat { rng.range(3.0, 4.5) } else { rng.range(2.0, 3.5) };
                 let s = if rng.chance(0.5) { 1.0 } else { -1.0 };
                 let (r, fw) = if near.is_some() { (right, dir) } else { (tright, tfwd) };
                 t.home = base;
@@ -2086,7 +2096,7 @@ impl Game {
                 Kind::Bat => {
                     let body = base * Mat4::from_translation(-Vec3::Y * 0.3);
                     m.bat_body.draw(out, &body, light, hl, None);
-                    let flap = (a * 18.0 + t.phase).sin() * 0.8;
+                    let flap = (a * 26.0 + t.phase).sin() * 0.8;
                     let lw = base * Mat4::from_translation(Vec3::new(-0.27, 0.0, 0.0)) * Mat4::from_rotation_z(flap) * Mat4::from_translation(Vec3::new(-0.36, 0.0, 0.0));
                     m.bat_wing.draw(out, &lw, light, hl, None);
                     let rw = base * Mat4::from_translation(Vec3::new(0.27, 0.0, 0.0)) * Mat4::from_rotation_z(-flap) * Mat4::from_rotation_y(std::f32::consts::PI) * Mat4::from_translation(Vec3::new(-0.36, 0.0, 0.0));
