@@ -100,6 +100,10 @@ const SWARM_BATCH: usize = 3;
 const BOSS_COUNT: usize = 8;
 /// Seconds a haunted portrait spends peeling off its wall before it flies.
 const PORTRAIT_PEEL: f32 = 0.8;
+/// Most seconds a target may stay past its life while the cart closes in on it.
+const LINGER_MAX: f32 = 4.0;
+/// A lingering target leaves once it's this close in front of the camera.
+const LINGER_NEAR: f32 = 4.5;
 
 /// Keys of the shootable letter grid: A-Z, then delete and done.
 const KEYS: [&str; 28] = [
@@ -923,7 +927,8 @@ impl Game {
             }
         }
         match best {
-            Some((_, t)) => {
+            Some((_, mut t)) => {
+                self.linger(&mut t);
                 self.lane += 1;
                 self.spawn_sound(t.kind, t.home);
                 self.spawn_kinds[t.kind.index()] += 1;
@@ -936,6 +941,27 @@ impl Game {
                 false
             }
         }
+    }
+
+    /// Lets a target that stays put stick around while the cart closes in on it, until
+    /// it gets near, slips off screen or goes out of sight. Fliers keep their life,
+    /// since their path is timed to it.
+    fn linger(&self, t: &mut Target) {
+        if self.state != State::Ride || matches!(t.kind, Kind::Bat | Kind::Candy | Kind::Portrait) {
+            return;
+        }
+        let mut age = t.life;
+        while age < t.life + LINGER_MAX && self.ride_t + age + 0.1 < RIDE_SECONDS {
+            let next = age + 0.1;
+            let (eye, right, up, vp) = self.view_ahead(next);
+            let p = Self::motion(t, next);
+            let near = Self::on_screen(&vp, p).map_or(true, |(_, w)| w < LINGER_NEAR);
+            if near || !self.fully_visible(eye, right, up, t.kind, p) {
+                break;
+            }
+            age = next;
+        }
+        t.life = age;
     }
 
     /// Builds a candidate target. The spot is chosen on screen first (at screen x
