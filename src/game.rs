@@ -100,6 +100,8 @@ const SWARM_BATCH: usize = 3;
 const BOSS_COUNT: usize = 8;
 /// Seconds a haunted portrait spends peeling off its wall before it flies.
 const PORTRAIT_PEEL: f32 = 0.8;
+/// Seconds into a guard cycle at which the Pumpkin King's hands are back down.
+const GUARD_END: f32 = 2.15;
 /// Most seconds a target may stay past its life while the cart closes in on it.
 const LINGER_MAX: f32 = 4.0;
 /// A lingering target leaves once it's this close in front of the camera.
@@ -230,6 +232,8 @@ struct Boss {
     /// Side-to-side sway, advanced at a speed that rises with rage. (Using `t * speed`
     /// would make him jump sideways whenever a hit raises the speed.)
     sway: f32,
+    /// Time into his current guard cycle (negative while he waits for the first one).
+    guard_t: f32,
     flash: f32,
     wobble: f32,
     summons_done: u32,
@@ -1317,6 +1321,7 @@ impl Game {
                         pos: Vec3::new(0.0, -26.0, 200.0),
                         t: 0.0,
                         sway: 0.0,
+                        guard_t: -5.0,
                         flash: 0.0,
                         wobble: 0.0,
                         summons_done: 0,
@@ -1860,13 +1865,14 @@ impl Game {
     }
 
     /// How far his hands are raised to guard his face (0 to 1): for about two seconds
-    /// in every six, once the fight is under way.
+    /// each guard cycle. The rest between guards falls from 4.5 s at full health to
+    /// under half a second near the end.
     fn boss_guard(b: &Boss) -> f32 {
-        if b.defeated || b.t < 5.0 {
+        if b.defeated {
             return 0.0;
         }
-        let u = (b.t - 5.0).rem_euclid(6.0);
-        smooth(u / 0.35) * (1.0 - smooth((u - 1.8) / 0.35))
+        let u = b.guard_t;
+        smooth(u / 0.35) * (1.0 - smooth((u - (GUARD_END - 0.35)) / 0.35))
     }
 
     /// Only his head can be hurt; shots at his hands do nothing.
@@ -1883,6 +1889,12 @@ impl Game {
         let rage = 1.0 - b.hp / b.max_hp;
         let rise = smooth(b.t / 2.5);
         b.sway += dt * (0.45 + rage * 0.5);
+        // Each guard lasts the same; the rest before the next one shrinks as he gets angrier.
+        b.guard_t += dt;
+        let rest = (4.5 * (1.0 - rage).powf(1.5)).max(0.4);
+        if b.guard_t > GUARD_END + rest {
+            b.guard_t = 0.0;
+        }
         let x = b.sway.sin() * (7.5 + rage * 2.0) * smooth((b.t - 2.0) / 2.0);
         let y = -26.0 + (16.5 + (b.t * 1.1).sin() * 1.3) * rise;
         let z = 200.0 + (b.t * 0.37).sin() * 2.5 - rage * 2.0;
