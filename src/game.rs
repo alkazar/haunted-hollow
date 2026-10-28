@@ -1362,12 +1362,11 @@ impl Game {
                 _ => {}
             }
             t.pos = pos;
+            // Fliers pop in quicker, then hover at the end of their path while they shrink.
             if matches!(t.kind, Kind::Bat | Kind::Candy) {
-                t.scale = smooth(t.age / 0.25);
-                if t.age >= t.life {
-                    t.dead = true;
-                }
-            } else if t.leave > 0.4 {
+                t.scale = smooth(t.age / 0.25) * (1.0 - smooth(t.leave / 0.4));
+            }
+            if t.leave > 0.4 {
                 t.dead = true;
             }
             // Gone behind the cart.
