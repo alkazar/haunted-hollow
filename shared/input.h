@@ -1,12 +1,12 @@
-// Controllers: Namco GunCon light guns and ordinary pads (which steer a
-// crosshair), one per controller port.
+// Controllers, one per player: on the PS1 Namco GunCon light guns or pads (which
+// steer a crosshair), on the Wii Wii Remotes. PORTS comes from platform.h.
 
 #pragma once
 
 #include <stdint.h>
+#include "platform.h"
 
-#define PORTS 2
-
+// DEV_GUN aims by itself (light gun, Wii Remote pointer); DEV_PAD steers a crosshair.
 enum { DEV_NONE, DEV_PAD, DEV_GUN };
 
 typedef struct {
@@ -15,8 +15,8 @@ typedef struct {
 	int aim_valid, x, y;
 	int fire;            // trigger held
 	int fire_pressed;    // a shot this frame (for guns: once the gun has seen the screen)
-	int start_pressed;   // pad START / gun A
-	int back_pressed;    // pad SELECT / gun B
+	int start_pressed;   // starts the ride, pauses it
+	int back_pressed;    // back to the title screen while paused
 	int any_pressed;     // anything pressed (to join)
 } Input;
 
@@ -29,3 +29,7 @@ void input_update(int frames);
 int  input_wants_flash(void);
 // Re-centres a gun so that its last shot lands on (x, y).
 void input_calibrate(int port, int x, int y);
+// Buzzes a controller that can (Wii Remotes).
+void input_rumble(int port, int ms);
+// What to tell a player who hasn't joined yet ("PRESS A"...).
+const char *input_join_label(int port);

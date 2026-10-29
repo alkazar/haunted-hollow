@@ -2,12 +2,13 @@
 // game spawns (recorded by the exporter, which also checked every spot can be
 // seen from the cart), replayed here at the same moments.
 //
-// Up to two riders, one per controller port: P1 red, P2 blue.
+// Up to PORTS riders (two on the PS1, four on the Wii): P1 red, P2 blue, P3 green,
+// P4 yellow. platform.h has the rest of what differs between consoles.
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <psxgte.h>
+#include "platform.h"
 #include "game.h"
 #include "gfx.h"
 #include "cam.h"
@@ -16,7 +17,6 @@
 #include "input.h"
 #include "util.h"
 #include "data.h"
-#include <hwregs_c.h>
 
 #define NP PORTS
 
@@ -153,8 +153,8 @@ static struct {
 	Rng rng;
 } G;
 
-static const SpawnRec *spawn_one, *spawn_two, *spawn_summon;
-static int n_one, n_two, n_summon;
+static const SpawnRec *spawn_sets[4], *spawn_summon;
+static int n_sets[4], n_summon;
 static const SVECTOR *fires, *cauldrons;
 static const Cloud *clouds;
 static const Mist *mists;
@@ -337,17 +337,14 @@ static const char *zone_name(int z) {
 	return names[z];
 }
 
-// Fog colour, start and end (blocks) and lantern strength per zone. The PS1 fog
-// closes in sooner than the PC's (it can't draw as far).
+// Fog colour, start and end (blocks) and lantern strength per zone. Consoles that
+// can't draw as far as the PC close the fog in sooner (PLAT_FOG in platform.h).
 static void zone_fog(int z, float rgb[3], float *start, float *end, float *lamp) {
 	static const float col[7][3] = {
 		{ 0.07f, 0.06f, 0.15f }, { 0.04f, 0.03f, 0.06f }, { 0.04f, 0.03f, 0.06f }, { 0.04f, 0.03f, 0.06f },
 		{ 0.02f, 0.04f, 0.03f }, { 0.03f, 0.06f, 0.05f }, { 0.015f, 0.005f, 0.025f },
 	};
-	static const float range[7][3] = {
-		{ 9, 20, 0.5f }, { 7, 17, 0.95f }, { 7, 17, 0.95f }, { 7, 17, 0.95f },
-		{ 6, 15, 0.9f }, { 7, 17, 0.9f }, { 12, 26, 0.45f },
-	};
+	static const float range[7][3] = PLAT_FOG;
 	for (int i = 0; i < 3; i++)
 		rgb[i] = col[z][i];
 	*start = range[z][0], *end = range[z][1], *lamp = range[z][2];
@@ -389,11 +386,11 @@ static void start_ride(void) {
 	for (int i = 0; i < NP; i++)
 		reset_score(&G.players[i]);
 	// More riders get more targets (the PC game schedules them denser).
-	if (joined_count() >= 2) {
-		G.spawns = spawn_two, G.n_spawns = n_two;
-	} else {
-		G.spawns = spawn_one, G.n_spawns = n_one;
-	}
+	int set = joined_count() - 1;
+	if (set < 0) set = 0;
+	while (set > 0 && !n_sets[set])
+		set--;
+	G.spawns = spawn_sets[set], G.n_spawns = n_sets[set];
 	G.next_spawn = 0;
 	for (int k = 0; k < 8; k++)
 		G.last_spawn_sound[k] = -9;
@@ -415,6 +412,16 @@ static void go_to_title(void) {
 	stream_reset();
 }
 
+// Computer players never make the high-score table.
+static int is_bot(int i) {
+#if HH_BOTS
+	return i < HH_BOTS;
+#else
+	(void) i;
+	return 0;
+#endif
+}
+
 static int qualifies(int score, int place_offset) {
 	if (score <= 0)
 		return 0;
@@ -429,7 +436,7 @@ static int qualifies(int score, int place_offset) {
 static int high_score_riders(int out[NP]) {
 	int order[NP], n = 0;
 	for (int i = 0; i < NP; i++)
-		if (G.players[i].joined)
+		if (G.players[i].joined && !is_bot(i))
 			order[n++] = i;
 	for (int a = 0; a < n; a++)
 		for (int b = a + 1; b < n; b++)
@@ -475,7 +482,7 @@ static int insert_high(int score, const char *name) {
 	for (int i = n - 1; i > pos; i--)
 		G.high[i] = G.high[i - 1];
 	G.high[pos].score = score;
-	strncpy(G.high[pos].initials, name, 3);
+	memcpy(G.high[pos].initials, name, 3);
 	G.high[pos].initials[3] = 0;
 	G.n_high = n;
 	return pos;
@@ -723,7 +730,7 @@ static void update_boss(float dt) {
 		b->taunt_text = "GET THEM, MY BATS!";
 		sfx(SFX_LAUGH, 0.8f, 0, 1.1f);
 		if (G.n_targets < 12) {
-			// The recorded waves (for two riders); one rider gets one helper fewer.
+			// The recorded waves (for the most riders); fewer riders get fewer helpers.
 			int seen = 0, first = 0;
 			uint32_t t_prev = 0xffffffff;
 			for (int i = 0; i < n_summon; i++) {
@@ -766,6 +773,7 @@ static void hit_boss(int pi, F3 at, int have_at) {
 	else
 		sprintf(txt, "+%d", pts);
 	popup(f3_add(b->pos, f3(rng_range(&G.rng, -2, 2), rng_range(&G.rng, 0, 3), -3)), txt, color, final_hit);
+	input_rumble(pi, final_hit ? 500 : 60);
 	if (!have_at)
 		at = f3_add(b->pos, f3(rng_range(&G.rng, -2.5f, 2.5f), rng_range(&G.rng, -1, 3), -3.5f));
 	int first = G.n_particles;
@@ -845,6 +853,7 @@ static void initials_shot(int pi, float ax, float ay) {
 		G.key_flash_t[k] = G.total_t;
 		G.key_flash_p[k] = pi;
 		sfx(k == KEY_END ? SFX_DING : SFX_POP, 0.6f, pan_x(ax), 0.9f + pi * 0.12f);
+		input_rumble(pi, 60);
 	} else {
 		sfx(SFX_BONK, 0.4f, pan_x(ax), 1);
 	}
@@ -872,6 +881,7 @@ static void shoot(int pi, float ax, float ay) {
 			burst(f3_add(G.eye, f3_mul(ray_dir(px, py), 4.0f)), 20, color, 1);
 			sfx(SFX_POP, 0.7f, pan_x(px), 0.9f + pi * 0.12f);
 			sfx(SFX_POOF, 0.5f, pan_x(px), 1);
+			input_rumble(pi, 80);
 			if (inputs[pi].dev == DEV_GUN)
 				G.players[pi].aim_x = G.players[pi].aim_tx = px, G.players[pi].aim_y = G.players[pi].aim_ty = py;
 			return;
@@ -939,6 +949,7 @@ static void shoot(int pi, float ax, float ay) {
 			sfx(SFX_BONUS, 0.7f, pan_x(ax), 1);
 		else
 			sfx(SFX_POOF, 0.5f, pan_x(ax), 1);
+		input_rumble(pi, 80);
 	} else if (boss_hit) {
 		F3 d = ray_dir(ax, ay);
 		float dist = maxf(f3_dot(f3_sub(boss_c, G.eye), d) - 3.8f - 1.5f, 1.0f);
@@ -1002,6 +1013,7 @@ static void handle_sources(void) {
 			p->joined = 1;
 			reset_score(p);
 			sfx(SFX_JOIN, 0.6f, 0, 1.0f + i * 0.1f);
+			input_rumble(i, 200);
 		}
 		if (in->aim_valid) {
 			p->aim_tx = in->x, p->aim_ty = in->y;
@@ -1099,10 +1111,9 @@ static void update_camera(float dt) {
 	int opening = G.state == S_VICTORY && G.state_t > DOOR_START;
 	if (opening || G.state == S_OUTRO || G.state == S_RESULTS || G.state == S_INITIALS || G.state == S_HIGHSCORES) {
 		fc[0] = fc[1] = fc[2] = 0;
-		if (G.state == S_VICTORY)
-			fs = 18, fe = 34;
-		else
-			fs = 8, fe = 26;
+		static const float victory[2] = PLAT_FOG_VICTORY, outro[2] = PLAT_FOG_OUTRO;
+		fs = G.state == S_VICTORY ? victory[0] : outro[0];
+		fe = G.state == S_VICTORY ? victory[1] : outro[1];
 		rate = G.state == S_VICTORY ? 1.5f : 2.5f;
 	}
 	float k = 1.0f - fexp(-dt * rate);
@@ -1140,8 +1151,59 @@ static int accuracy_bonus(int hits, int shots) {
 	return (int) (MAX_AIM_BONUS * over * over / 10.0f + 0.5f) * 10;
 }
 
+#if HH_BOTS
+// Computer players (an attract mode, and for testing): they take the first HH_BOTS
+// controllers' places, join, aim at whatever they can see and shoot it.
+static void update_bots(float dt) {
+	static float think[NP], tx[NP], ty[NP], bx[NP], by[NP], cool[NP];
+	for (int i = 0; i < HH_BOTS && i < NP; i++) {
+		Input *in = &inputs[i];
+		memset(in, 0, sizeof(*in));
+		in->dev = DEV_GUN;
+		in->aim_valid = 1;
+		in->any_pressed = !G.players[i].joined;
+		in->start_pressed = G.state == S_TITLE && G.state_t > 1.5f && G.players[i].joined;
+		think[i] -= dt;
+		if (think[i] <= 0) {
+			think[i] = rng_range(&G.rng, 0.25f, 0.6f);
+			float cx = SCREEN_W * (0.3f + 0.13f * i), cy = SCREEN_H * 0.5f, sx, sy, w;
+			int n = 0;
+			if (G.state == S_TUTORIAL && G.practice[i] < 0 && G.state_t > 1.5f) {
+				practice_pos(i, &cx, &cy);
+				n = 1;
+			}
+			for (int k = 0; k < G.n_targets && !n; k++) {
+				int t = (k + i + rng_int(&G.rng, 0, 7)) % G.n_targets;
+				if (G.targets[t].scale > 0.5f && project(G.targets[t].pos, &sx, &sy, &w))
+					cx = sx, cy = sy, n = 1;
+			}
+			if (!n && G.boss.active && !G.boss.defeated && G.boss.t > 2 && project(G.boss.pos, &sx, &sy, &w))
+				cx = sx, cy = sy;
+			tx[i] = cx + rng_range(&G.rng, -12, 12);
+			ty[i] = cy + rng_range(&G.rng, -12, 12);
+		}
+		float k = 1.0f - fexp(-dt * 6.0f);
+		bx[i] += (tx[i] - bx[i]) * k;
+		by[i] += (ty[i] - by[i]) * k;
+		in->x = (int) bx[i], in->y = (int) by[i];
+		cool[i] -= dt;
+		float dx = bx[i] - tx[i], dy = by[i] - ty[i];
+		if (dx * dx + dy * dy < 15 * 15 && cool[i] <= 0) {
+			in->fire_pressed = 1;
+			cool[i] = 0.3f;
+		}
+		// On the score screens, move on after a while.
+		if ((G.state == S_RESULTS && G.state_t > 6) || (G.state == S_HIGHSCORES && G.state_t > 5))
+			in->fire_pressed = 1;
+	}
+}
+#endif
+
 static void update(float dt) {
 	G.total_t += dt;
+#if HH_BOTS
+	update_bots(dt);
+#endif
 	handle_sources();
 	int any_pause = 0, any_back = 0;
 	for (int i = 0; i < NP; i++) {
@@ -1764,7 +1826,7 @@ static void draw_scores(void) {
 			panel(x, y, bw, ph, BLACK, 0.35f, dark);
 			uint8_t dim[3];
 			scaled(c, 0.7f, dim);
-			const char *msg = inputs[i].dev == DEV_GUN ? "PULL TRIGGER" : "PRESS X";
+			const char *msg = input_join_label(i);
 			text_fit(msg, x + bw * 0.5f, y + ph * 0.5f - 4, 1, bw - 8, dim, ALIGN_CENTER);
 		}
 	}
@@ -1800,16 +1862,16 @@ static void draw_title(void) {
 			float pulse = 1.0f + 0.04f * fsin(t * 6.0f);
 			text_fit("READY!", x, y + 27, 1.1f * pulse, inner, WHITE, ALIGN_CENTER);
 		} else if (((int) (t * 1.5f)) % 2 == 0) {
-			const char *msg = inputs[i].dev == DEV_GUN ? "PULL TRIGGER" : inputs[i].dev == DEV_PAD ? "PRESS X" : "NO CONTROLLER";
+			const char *msg = input_join_label(i);
 			text_fit(msg, x, y + 28, 1, inner, WHITE, ALIGN_CENTER);
 		}
 	}
 	char msg[48];
 	if (joined_count() == 0) {
-		strcpy(msg, "PULL THE TRIGGER OR PRESS X TO JOIN");
+		strcpy(msg, TXT_JOIN);
 	} else {
 		float left = 15.0f - maxf(G.title_join_t, 0);
-		sprintf(msg, "PRESS START (GUN: A) TO RIDE  (%d)", (int) (maxf(left, 0) + 0.99f));
+		sprintf(msg, TXT_START "  (%d)", (int) (maxf(left, 0) + 0.99f));
 	}
 	static const uint8_t note[3] = { 255, 230, 128 };
 	stext_fit(msg, w * 0.5f, h * 0.84f, 1, w * 0.94f, note, ALIGN_CENTER);
@@ -1893,7 +1955,7 @@ static void draw_results(void) {
 		scaled(WHITE, appear, wc);
 		panel(x, y, rw, row_h, fill, 0.9f, cc);
 		text(medal[rank], x + 6, y + row_h * 0.5f - 8, 2, mc, ALIGN_LEFT);
-		char name[12];
+		char name[20];
 		sprintf(name, "PLAYER %d", i + 1);
 		text(name, x + 62, y + 8, 1.4f, cc, ALIGN_LEFT);
 		text_fit(award(i), x + 62, y + 28, 1, rw * 0.42f, wc, ALIGN_LEFT);
@@ -2068,7 +2130,7 @@ static void draw_hud(void) {
 	if (G.state == S_RIDE || G.state == S_BOSS || G.state == S_VICTORY || G.state == S_OUTRO) {
 		if (G.state == S_RIDE && G.ride_t < 3.6f) {
 			int n = 3 - (int) G.ride_t;
-			char txt[4];
+			char txt[12];
 			static const uint8_t go_c[3] = { 102, 255, 102 };
 			const uint8_t *col = ORANGE;
 			if (n > 0)
@@ -2117,8 +2179,8 @@ static void draw_hud(void) {
 		hud_darken(140);
 		static const uint8_t grey[3] = { 204, 204, 204 };
 		stext("PAUSED", w * 0.5f, h * 0.36f, 3, ORANGE, ALIGN_CENTER);
-		stext_fit("PRESS START (GUN: A) TO KEEP RIDING", w * 0.5f, h * 0.36f + 36, 1, w * 0.94f, WHITE, ALIGN_CENTER);
-		stext_fit("SELECT (GUN: B) GOES BACK TO THE START", w * 0.5f, h * 0.36f + 48, 1, w * 0.94f, grey, ALIGN_CENTER);
+		stext_fit(TXT_KEEP, w * 0.5f, h * 0.36f + 36, 1, w * 0.94f, WHITE, ALIGN_CENTER);
+		stext_fit(TXT_QUIT, w * 0.5f, h * 0.36f + 48, 1, w * 0.94f, grey, ALIGN_CENTER);
 	}
 }
 
@@ -2126,10 +2188,14 @@ static void draw_hud(void) {
 
 void game_init(void) {
 	const SpawnHeader *sh = (const SpawnHeader *) spawns_bin;
-	n_one = sh->n_one, n_two = sh->n_two, n_summon = sh->n_summon;
-	spawn_one = (const SpawnRec *) (sh + 1);
-	spawn_two = spawn_one + n_one;
-	spawn_summon = spawn_two + n_two;
+	const SpawnRec *r = (const SpawnRec *) (sh + 1);
+	for (int k = 0; k < 4; k++) {
+		spawn_sets[k] = r;
+		n_sets[k] = sh->n[k];
+		r += n_sets[k];
+	}
+	spawn_summon = r;
+	n_summon = sh->n_summon;
 	const SceneryHeader *sc = (const SceneryHeader *) scenery_bin;
 	n_fires = sc->n_fire, n_cauldrons = sc->n_cauldron, n_clouds = sc->n_cloud, n_mist = sc->n_mist;
 	fires = (const SVECTOR *) (sc + 1);
@@ -2169,7 +2235,7 @@ void game_frame(int ms) {
 
 	// (The score screens cover everything, so the world isn't drawn behind them.)
 	int covered = G.state == S_RESULTS || G.state == S_INITIALS || G.state == S_HIGHSCORES;
-	int t0 = TIMER_VALUE(1);
+	int t0 = PLAT_TICKS();
 	const uint16_t *list;
 	int n = covered ? 0 : stream_list(G.cam.seg, &list);
 	for (int i = 0; i < n; i++) {
@@ -2177,21 +2243,21 @@ void game_frame(int ms) {
 		if (m)
 			gfx_draw_meshlet(m);
 	}
-	int t1 = TIMER_VALUE(1);
+	int t1 = PLAT_TICKS();
 	if (G.cam.zone == Z_GRAVEYARD && !covered)
 		gfx_draw_sky(1);
 	if (!covered)
 		draw_scenery();
-	int t2 = TIMER_VALUE(1);
+	int t2 = PLAT_TICKS();
 	if (!covered) {
 		draw_doors();
 		draw_targets();
 		draw_boss();
 		draw_particles();
 	}
-	int t3 = TIMER_VALUE(1);
+	int t3 = PLAT_TICKS();
 	draw_hud();
-	int t4 = TIMER_VALUE(1);
+	int t4 = PLAT_TICKS();
 #ifdef HH_DEBUG
 	{
 		static int acc_ms, acc_f, fps10;

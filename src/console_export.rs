@@ -1,6 +1,9 @@
-//! `--export-ps1 DIR`: writes everything the PlayStation port (`ps1/`) needs as binary
-//! data, so the PS1 rides through the very same world, with the same targets, models,
-//! textures, music and sound effects.
+//! `--export-ps1 DIR` and `--export-wii DIR`: write everything the console ports
+//! (`ps1/`, `wii/`, sharing `shared/`) need as binary data, so they ride through the
+//! very same world, with the same targets, models, textures, music and sound effects.
+//!
+//! The formats are the same for both consoles (see `Target` for what differs), except
+//! for textures and sound. The rest of this describes the PS1, the tighter of the two.
 //!
 //! The world is far too big for the PS1's 2 MB of RAM, so it is streamed from the CD
 //! as the cart moves. Only the faces a rider can see from the track are kept; they are
@@ -9,9 +12,10 @@
 //! meshlets in view from it. The PS1 reads ahead and drops meshlets once the cart has
 //! passed the last stretch that sees them.
 //!
-//! All files are little-endian. World positions are in PS1 units, `UNIT` per block;
-//! directions are 4.12 fixed point. The C side reads them with the structs in
-//! `ps1/src/data.h`, which must match the layouts written here.
+//! Files are in the console's byte order (little-endian for the PS1, big-endian for
+//! the Wii). World positions are in units of 1/`UNIT` block; directions are 4.12
+//! fixed point. The C side reads them with the structs in `shared/data.h`, which must
+//! match the layouts written here.
 
 use crate::atlas;
 use crate::game::{Game, Kind, SpawnRecord};
@@ -33,11 +37,32 @@ const CHUNK: f32 = 8.0;
 const SEG_LEN: f32 = 2.0;
 /// Segments of track the PS1 reads ahead.
 const LOOKAHEAD: usize = 8;
-/// Faces further than this from every camera on the ride are dropped. (The PS1's fog
-/// closes in sooner than the PC's: 15 to 20 blocks, but 30 in the Pumpkin King's
-/// lair, so the doors behind him show.)
-fn max_view(eye: Vec3) -> f32 {
-    if eye.z > 176.0 { 36.0 } else { 24.0 }
+/// What differs between the consoles' data.
+pub struct Target {
+    /// Big-endian (Wii) or little-endian (PS1).
+    big_endian: bool,
+    /// Merge neighbouring faces whose light blends smoothly into bigger ones (with
+    /// repeating tiles). The Wii's GPU can't repeat a tile of the atlas, and doesn't
+    /// need fewer faces anyway.
+    merge: bool,
+    /// Most riders (one schedule of targets is recorded for each number of riders).
+    players: usize,
+    /// Faces further than this from every camera on the ride are dropped (the
+    /// console's fog ends sooner); a second, longer distance for the Pumpkin King's
+    /// lair, so the doors behind him show.
+    view: f32,
+    view_lair: f32,
+}
+
+/// The PS1's fog closes in at 15 to 20 blocks (30 in the lair).
+pub const PS1: Target = Target { big_endian: false, merge: true, players: 2, view: 24.0, view_lair: 36.0 };
+/// The Wii draws much further (its fog ends at 46 blocks).
+pub const WII: Target = Target { big_endian: true, merge: false, players: 4, view: 48.0, view_lair: 48.0 };
+
+impl Target {
+    fn max_view(&self, eye: Vec3) -> f32 {
+        if eye.z > 176.0 { self.view_lair } else { self.view }
+    }
 }
 /// Bytes per meshlet (one CD sector).
 const SECTOR: usize = 2048;
@@ -49,24 +74,32 @@ const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
 /// Sample rate of all sounds on the PS1's sound chip.
 const SPU_RATE: f32 = 22050.0;
 
-#[derive(Default)]
-struct Out(Vec<u8>);
+/// A file being written, in the console's byte order.
+struct Out(Vec<u8>, bool);
 
 impl Out {
+    fn new(t: &Target) -> Out {
+        Out(vec![], t.big_endian)
+    }
     fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
     fn u16(&mut self, v: u16) {
-        self.0.extend_from_slice(&v.to_le_bytes());
+        self.0.extend_from_slice(&if self.1 { v.to_be_bytes() } else { v.to_le_bytes() });
     }
     fn i16(&mut self, v: i16) {
-        self.0.extend_from_slice(&v.to_le_bytes());
+        self.u16(v as u16);
     }
     fn u32(&mut self, v: u32) {
-        self.0.extend_from_slice(&v.to_le_bytes());
+        self.0.extend_from_slice(&if self.1 { v.to_be_bytes() } else { v.to_le_bytes() });
     }
     fn i32(&mut self, v: i32) {
-        self.0.extend_from_slice(&v.to_le_bytes());
+        self.u32(v as u32);
+    }
+    /// Overwrites a u32 written earlier at `at`.
+    fn patch_u32(&mut self, at: usize, v: u32) {
+        let b = if self.1 { v.to_be_bytes() } else { v.to_le_bytes() };
+        self.0[at..at + 4].copy_from_slice(&b);
     }
     fn tag(&mut self, t: &[u8; 4]) {
         self.0.extend_from_slice(t);
@@ -225,7 +258,7 @@ fn segment_cameras(track: &Track) -> Vec<Vec<Vec3>> {
 }
 
 /// For each segment of track, which quads can be seen from any camera in it.
-fn visibility(world: &World, segs: &[Vec<Vec3>], qs: &[Quad]) -> Vec<Vec<u32>> {
+fn visibility(t: &Target, world: &World, segs: &[Vec<Vec3>], qs: &[Quad]) -> Vec<Vec<u32>> {
     let probes: Vec<(Vec3, Vec3, [Vec3; 5])> = qs
         .iter()
         .map(|q| {
@@ -252,7 +285,7 @@ fn visibility(world: &World, segs: &[Vec<Vec3>], qs: &[Quad]) -> Vec<Vec<u32>> {
                             for (qi, (c, n, pts)) in probes.iter().enumerate() {
                                 let seen = cams.iter().any(|&eye| {
                                     let to = eye - *c;
-                                    if to.length() > max_view(eye) || to.dot(*n) <= 0.0 {
+                                    if to.length() > t.max_view(eye) || to.dot(*n) <= 0.0 {
                                         return false;
                                     }
                                     pts.iter().any(|&p| clear(world, eye, p))
@@ -301,7 +334,7 @@ const MERGE_MAX: i32 = 8;
 /// tile, into rectangles, as long as the light across them is smooth enough for the
 /// GPU's colour blend to reproduce it. Fewer, bigger faces are much cheaper for the
 /// PS1; their tiles repeat with the GPU's texture window.
-fn merge_faces(qs: &[Quad], list: &[usize], quad_segs: &[Vec<usize>], first_track: usize) -> Vec<PQuad> {
+fn merge_faces(t: &Target, qs: &[Quad], list: &[usize], quad_segs: &[Vec<usize>], first_track: usize) -> Vec<PQuad> {
     let mut out = vec![];
     type Key = (glam::IVec3, glam::IVec3, glam::IVec3, i32, u8, u8);
     let mut groups: HashMap<Key, HashMap<(i32, i32), usize>> = HashMap::new();
@@ -313,7 +346,7 @@ fn merge_faces(qs: &[Quad], list: &[usize], quad_segs: &[Vec<usize>], first_trac
         let u = q.p[3] - q.p[0];
         let unit = |v: Vec3| (v.length() - 1.0).abs() < 1e-4 && v.abs().max_element() > 0.999;
         let int = q.p.iter().all(|p| (*p - p.round()).abs().max_element() < 1e-4);
-        if qi < first_track && int && unit(r) && unit(u) {
+        if t.merge && qi < first_track && int && unit(r) && unit(u) {
             let (ri, ui) = (r.round().as_ivec3(), u.round().as_ivec3());
             let n = ri.cross(ui);
             let p0 = q.p[0].round().as_ivec3();
@@ -417,11 +450,11 @@ fn face_group(q: &Quad, track: bool) -> u8 {
 /// Packs the visible quads into meshlets and writes WORLD.BIN (the meshlets, for the
 /// CD) and pvs.bin (colour palette, each meshlet's span of segments, and the meshlets
 /// to draw from each segment).
-fn export_world(dir: &str, world: &World, track: &Track) -> std::io::Result<()> {
+fn export_world(t: &Target, dir: &str, world: &World, track: &Track) -> std::io::Result<()> {
     let qs = quads(&world.build_world_mesh(track));
     let first_track = qs.len() - world.track_mesh(track).len() / 4;
     let segs = segment_cameras(track);
-    let vis = visibility(world, &segs, &qs);
+    let vis = visibility(t, world, &segs, &qs);
     let n_segs = vis.len();
     // Each quad's segments (a quad seen from one segment is drawn from its neighbours
     // too, so a camera between two segments never misses anything).
@@ -447,7 +480,7 @@ fn export_world(dir: &str, world: &World, track: &Track) -> std::io::Result<()> 
         let new = || Meshlet { origin, verts: vec![], quads: vec![], segs: vec![] };
         let mut m = new();
         let mut lookup: HashMap<([i16; 3], u16), u8> = HashMap::new();
-        for q in merge_faces(&qs, list, &quad_segs, first_track) {
+        for q in merge_faces(t, &qs, list, &quad_segs, first_track) {
             let keys: [([i16; 3], u16); 4] = [0, 1, 2, 3].map(|k| {
                 let p = q.p[k] * UNIT;
                 let pos = [i16_of(p.x - origin[0] as f32), i16_of(p.y - origin[1] as f32), i16_of(p.z - origin[2] as f32)];
@@ -484,7 +517,7 @@ fn export_world(dir: &str, world: &World, track: &Track) -> std::io::Result<()> 
     // Disc order = the order the ride first needs them.
     meshlets.sort_by_key(|m| (m.segs[0], *m.segs.last().unwrap()));
     let mut seg_lists: Vec<Vec<u16>> = vec![vec![]; n_segs];
-    let mut img = Out::default();
+    let mut img = Out::new(t);
     for (mi, m) in meshlets.iter().enumerate() {
         for &s in &m.segs {
             seg_lists[s].push(mi as u16);
@@ -537,7 +570,7 @@ fn export_world(dir: &str, world: &World, track: &Track) -> std::io::Result<()> 
     );
     img.save(dir, "WORLD.BIN")?;
 
-    let mut o = Out::default();
+    let mut o = Out::new(t);
     o.tag(b"PVS1");
     o.u16(meshlets.len() as u16);
     o.u16(n_segs as u16);
@@ -568,8 +601,8 @@ fn export_world(dir: &str, world: &World, track: &Track) -> std::io::Result<()> 
 // ============================================================================ camera
 
 /// track.bin: the camera for every 1/20 s of the ride and the outro, plus fixed poses.
-fn export_track(out_dir: &str, game: &Game, track: &Track) -> std::io::Result<()> {
-    let mut o = Out::default();
+fn export_track(t: &Target, out_dir: &str, game: &Game, track: &Track) -> std::io::Result<()> {
+    let mut o = Out::new(t);
     let n_ride = (RIDE_SECONDS * CAM_HZ) as usize + 1;
     let outro_time = 4.8f32;
     let n_outro = (outro_time * CAM_HZ) as usize + 1;
@@ -656,7 +689,7 @@ fn write_model(o: &mut Out, m: &Model) {
 }
 
 /// models.bin: every voxel model, in the order of `enum model` in the C code.
-fn export_models(dir: &str) -> std::io::Result<()> {
+fn export_models(t: &Target, dir: &str) -> std::io::Result<()> {
     let m = Models::new();
     let list: [&Model; 18] = [
         &m.ghost,
@@ -678,7 +711,7 @@ fn export_models(dir: &str) -> std::io::Result<()> {
         &m.door[0],
         &m.door[1],
     ];
-    let mut o = Out::default();
+    let mut o = Out::new(t);
     o.tag(b"MDL1");
     o.u32(list.len() as u32);
     let table = o.0.len();
@@ -688,7 +721,7 @@ fn export_models(dir: &str) -> std::io::Result<()> {
     for (i, model) in list.iter().enumerate() {
         o.align(4);
         let off = o.0.len() as u32;
-        o.0[table + i * 4..table + i * 4 + 4].copy_from_slice(&off.to_le_bytes());
+        o.patch_u32(table + i * 4, off);
         write_model(&mut o, model);
     }
     o.save(dir, "models.bin")
@@ -709,20 +742,22 @@ fn write_spawn(o: &mut Out, s: &SpawnRecord, rel: Vec3) {
     o.u16(0);
 }
 
-/// spawns.bin: the targets of a ride for one rider and for two (more riders get more
-/// targets), and the helpers the Pumpkin King summons (relative to him).
-fn export_spawns(dir: &str) -> std::io::Result<()> {
-    let mut o = Out::default();
-    o.tag(b"SPN1");
+/// spawns.bin: the targets of a ride for each number of riders up to four (more
+/// riders get more targets; 0 for counts the console doesn't have), and the helpers
+/// the Pumpkin King summons for the most riders (relative to him).
+fn export_spawns(t: &Target, dir: &str) -> std::io::Result<()> {
+    let mut o = Out::new(t);
+    o.tag(b"SPN2");
     let mut sets = vec![];
-    for players in [1, 2] {
+    for players in 1..=t.players {
         let track = Track::new();
         let world = crate::world::generate(&track);
         sets.push(Game::record_spawns(track, world, players, SCREEN));
     }
-    let summons = &sets[1].1;
-    o.u16(sets[0].0.len() as u16);
-    o.u16(sets[1].0.len() as u16);
+    let summons = &sets[t.players - 1].1;
+    for n in 0..4 {
+        o.u16(sets.get(n).map_or(0, |s| s.0.len()) as u16);
+    }
     o.u16(summons.len() as u16);
     o.u16(0);
     for set in &sets {
@@ -733,10 +768,10 @@ fn export_spawns(dir: &str) -> std::io::Result<()> {
     for s in summons {
         write_spawn(&mut o, s, s.boss.unwrap_or(Vec3::ZERO));
     }
+    let counts: Vec<String> = sets.iter().map(|s| s.0.len().to_string()).collect();
     eprintln!(
-        "  targets: {} (1 rider), {} (2 riders), {} summoned (of which {} bats)",
-        sets[0].0.len(),
-        sets[1].0.len(),
+        "  targets for 1, 2... riders: {}; {} summoned (of which {} bats)",
+        counts.join(", "),
         summons.len(),
         summons.iter().filter(|s| s.kind == Kind::Bat).count()
     );
@@ -753,8 +788,8 @@ const LIGHT_Z: (i32, i32) = (-32, 300);
 
 /// light.bin: the world's light (for lighting targets) on a coarse grid, as 5:6:5
 /// with 1.0 = 16 (red, blue) or 32 (green) so it can go a little over 1.
-fn export_light(dir: &str, world: &World) -> std::io::Result<()> {
-    let mut o = Out::default();
+fn export_light(t: &Target, dir: &str, world: &World) -> std::io::Result<()> {
+    let mut o = Out::new(t);
     o.tag(b"LGT1");
     let n = |r: (i32, i32)| ((r.1 - r.0) / LIGHT_STEP + 1) as u16;
     for r in [LIGHT_X, LIGHT_Y, LIGHT_Z] {
@@ -779,9 +814,9 @@ fn export_light(dir: &str, world: &World) -> std::io::Result<()> {
 }
 
 /// sky.bin: moon, halo and stars as quads in world units (never fogged).
-fn export_sky(dir: &str) -> std::io::Result<()> {
+fn export_sky(t: &Target, dir: &str) -> std::io::Result<()> {
     let qs = quads(&crate::world::sky_mesh());
-    let mut o = Out::default();
+    let mut o = Out::new(t);
     o.tag(b"SKY1");
     o.u32(qs.len() as u32);
     for q in &qs {
@@ -803,9 +838,9 @@ fn export_sky(dir: &str) -> std::io::Result<()> {
 }
 
 /// scenery.bin: flames, cauldrons, clouds and mist puffs, animated by the PS1.
-fn export_scenery(dir: &str, game: &Game) -> std::io::Result<()> {
+fn export_scenery(t: &Target, dir: &str, game: &Game) -> std::io::Result<()> {
     let (fires, cauldrons, clouds, mist) = game.scenery();
-    let mut o = Out::default();
+    let mut o = Out::new(t);
     o.tag(b"SCN1");
     o.u16(fires.len() as u16);
     o.u16(cauldrons.len() as u16);
@@ -838,9 +873,14 @@ fn export_scenery(dir: &str, game: &Game) -> std::io::Result<()> {
 
 /// ATLAS.BIN: the 256x256 texture atlas (block tiles and the font) as PS1 15-bit
 /// colour. Clear pixels are 0 (the PS1 skips them); black is 0x8000.
-fn export_atlas(dir: &str) -> std::io::Result<()> {
+fn export_atlas(t: &Target, dir: &str) -> std::io::Result<()> {
     let px = atlas::build();
-    let mut o = Out::default();
+    if t.big_endian {
+        // The Wii takes the atlas as it is (RGBA, 8 bits each) and converts it itself.
+        eprintln!("  ATLAS.BIN: {} KB", px.len() / 1024);
+        return std::fs::write(format!("{dir}/ATLAS.BIN"), &px);
+    }
+    let mut o = Out::new(t);
     for p in px.chunks_exact(4) {
         let v = if p[3] < 128 {
             0
@@ -1004,7 +1044,7 @@ fn pan_vol(vol: f32, pan: f32) -> (u16, u16) {
 
 /// SOUND.BIN (the sound chip's samples, for the CD) and sound.bin (where each sample
 /// is, and the songs as note lists).
-fn export_sound(dir: &str) -> std::io::Result<()> {
+fn export_sound(t: &Target, dir: &str) -> std::io::Result<()> {
     let mut samples: Vec<Sample> = INSTS.iter().map(|&i| inst_sample(i)).collect();
     samples.extend(DRUMS.iter().map(|&d| drum_sample(d)));
     let sfx = [
@@ -1036,7 +1076,7 @@ fn export_sound(dir: &str) -> std::io::Result<()> {
     let cart_len = cart.len() / 28 * 28;
     samples.push(sample(cart[..cart_len].to_vec(), Some(0), SPU_RATE));
 
-    let mut blob = Out::default();
+    let mut blob = Out::new(t);
     let mut table = vec![];
     for s in &samples {
         table.push((blob.0.len() as u32, s.data.len() as u32));
@@ -1046,7 +1086,7 @@ fn export_sound(dir: &str) -> std::io::Result<()> {
     eprintln!("  sound: {} samples, {} KB of sound memory", samples.len(), blob.0.len() / 1024);
     blob.save(dir, "SOUND.BIN")?;
 
-    let mut o = Out::default();
+    let mut o = Out::new(t);
     o.tag(b"SND1");
     o.u16(samples.len() as u16);
     o.u16(first_sfx as u16);
@@ -1076,7 +1116,7 @@ fn export_sound(dir: &str) -> std::io::Result<()> {
     let songs = [song(&synth::TITLE), song(&synth::RIDE), song(&synth::BOSS), victory, song(&synth::RESULTS)];
     // The PC plays music at 0.42.
     let music_vol = 0.42;
-    let mut song_out = Out::default();
+    let mut song_out = Out::new(t);
     let mut heads = vec![];
     for (events, len, looping, norm) in &songs {
         let mut evs: Vec<(u32, u16, u16, u8, u16, u16)> = events
@@ -1119,22 +1159,87 @@ fn export_sound(dir: &str) -> std::io::Result<()> {
     o.save(dir, "sound.bin")
 }
 
-pub fn export(dir: &str) -> std::io::Result<()> {
+/// Wii sound: 16-bit big-endian PCM, mono. Effects keep more of their sparkle at a
+/// higher rate; the songs are long, so they get a lower one.
+const WII_SFX_RATE: f32 = 32000.0;
+const WII_SONG_RATE: f32 = 24000.0;
+
+/// Mixes a stereo buffer to mono at `rate` as 16-bit big-endian samples.
+fn pcm_be(b: &synth::Buf, rate: f32, gain: f32) -> Vec<u8> {
+    let step = synth::RATE / rate;
+    let n = (b.frames() as f32 / step) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let x = i as f32 * step;
+        let (j, f) = (x as usize, x.fract());
+        let at = |k: usize| {
+            let k = k.min(b.frames() - 1);
+            (b.data[k * 2] + b.data[k * 2 + 1]) * 0.5
+        };
+        let v = (at(j) * (1.0 - f) + at(j + 1) * f) * gain;
+        out.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_be_bytes());
+    }
+    out
+}
+
+/// SOUND.BIN for the Wii: every effect, the five songs exactly as the PC renders them
+/// (title, ride, boss, victory, results) and the cart's rattle, as PCM. Each entry is
+/// (offset, bytes, sample rate, loops), offsets from the start of the file; the data
+/// is 32-byte aligned for the Wii's sound library.
+fn export_wii_sound(t: &Target, dir: &str) -> std::io::Result<()> {
+    let bank = crate::audio::Bank::build();
+    let mut clips: Vec<(Vec<u8>, f32, bool)> = vec![];
+    for b in bank.sfx() {
+        clips.push((pcm_be(b, WII_SFX_RATE, 1.0), WII_SFX_RATE, false));
+    }
+    for (b, looping) in bank.songs() {
+        clips.push((pcm_be(b, WII_SONG_RATE, 1.0), WII_SONG_RATE, looping));
+    }
+    clips.push((pcm_be(bank.cart(), WII_SFX_RATE, 1.0), WII_SFX_RATE, true));
+    let mut o = Out::new(t);
+    o.tag(b"WSN1");
+    o.u32(clips.len() as u32);
+    let table = o.0.len();
+    for _ in &clips {
+        for _ in 0..4 {
+            o.u32(0);
+        }
+    }
+    for (i, (pcm, rate, looping)) in clips.iter().enumerate() {
+        o.align(32);
+        let at = table + i * 16;
+        let off = o.0.len() as u32;
+        o.patch_u32(at, off);
+        o.patch_u32(at + 4, pcm.len() as u32);
+        o.patch_u32(at + 8, *rate as u32);
+        o.patch_u32(at + 12, *looping as u32);
+        o.0.extend_from_slice(pcm);
+    }
+    o.align(32);
+    o.save(dir, "SOUND.BIN")
+}
+
+/// Writes all the data for `t` into `dir`.
+pub fn export(t: &Target, dir: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let t0 = std::time::Instant::now();
-    eprintln!("exporting PS1 data to {dir}");
+    eprintln!("exporting {} data to {dir}", if t.big_endian { "Wii" } else { "PS1" });
     let track = Track::new();
     let world = crate::world::generate(&track);
-    export_world(dir, &world, &track)?;
-    export_light(dir, &world)?;
+    export_world(t, dir, &world, &track)?;
+    export_light(t, dir, &world)?;
     let game = Game::new(Track::new(), world, false, 0);
-    export_track(dir, &game, &track)?;
-    export_scenery(dir, &game)?;
-    export_models(dir)?;
-    export_sky(dir)?;
-    export_atlas(dir)?;
-    export_sound(dir)?;
-    export_spawns(dir)?;
+    export_track(t, dir, &game, &track)?;
+    export_scenery(t, dir, &game)?;
+    export_models(t, dir)?;
+    export_sky(t, dir)?;
+    export_atlas(t, dir)?;
+    if t.big_endian {
+        export_wii_sound(t, dir)?;
+    } else {
+        export_sound(t, dir)?;
+    }
+    export_spawns(t, dir)?;
     eprintln!("done in {:.1}s", t0.elapsed().as_secs_f32());
     Ok(())
 }

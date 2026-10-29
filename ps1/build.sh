@@ -28,7 +28,7 @@ export PATH="$sdk/bin:$PATH"
 export PSN00BSDK_LIBS="$sdk/lib/libpsn00b"
 cmake -S "$here" -B "$here/build" -G Ninja -Wno-dev \
 	-DCMAKE_TOOLCHAIN_FILE="$PSN00BSDK_LIBS/cmake/sdk.cmake" \
-	-DCMAKE_BUILD_TYPE=Release -DHH_DATA="$data" -DHH_DEBUG=OFF -DHH_TEST_BOSS=OFF $CMAKE_ARGS > /dev/null
+	-DCMAKE_BUILD_TYPE=Release -DHH_DATA="$data" -DHH_DEBUG=OFF -DHH_TEST_BOSS=OFF -DHH_BOTS=0 $CMAKE_ARGS > /dev/null
 cmake --build "$here/build"
 echo "Built $here/build/haunted-hollow.cue"
 

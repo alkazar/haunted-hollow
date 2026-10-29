@@ -214,7 +214,8 @@ and an ARM64 Steam Linux Runtime.
 (or ordinary pads). It rides through the same world, with the same targets popping up at the
 same moments, the same models, textures, music and sound effects: the PC game exports all of
 them (`--export-ps1`) and the PS1 code, written in C with
-[PSn00bSDK](https://github.com/Lameguy64/PSn00bSDK), plays them back.
+[PSn00bSDK](https://github.com/Lameguy64/PSn00bSDK), plays them back. The game itself
+(`shared/`) is shared with the Wii version.
 
 ```sh
 ps1/build.sh          # -> ps1/build/haunted-hollow.bin + .cue
@@ -257,6 +258,41 @@ and it hasn't been measured on a real console yet. `CMAKE_ARGS=-DHH_DEBUG=ON ps1
 shows the frame rate and timings. `ps1/test/run.sh` plays the disc headless in PCSX-Redux
 with scripted button presses and saves screenshots.
 
+## Wii version
+
+`wii/` is a port to the Wii, for **1–4 players with Wii Remotes** pointing at the sensor bar,
+as on the PC. It shares the game itself with the PlayStation version (`shared/`), with the
+same world, targets, models and textures exported by the PC game (`--export-wii`). The Wii
+has the memory and the GPU for more: the whole world stays in memory, it draws as far as
+the PC's fog lets you see (up to 46 blocks), and it plays the PC's own music and effects.
+
+```sh
+wii/build.sh          # -> wii/build/hollow.dol, and wii/build/apps/ for the Homebrew Channel
+wii/build.sh --run    # build, then play it in Dolphin
+```
+
+It compiles in devkitPro's `devkitpro/devkitppc` container with podman (or
+`CONTAINER=docker`), so nothing needs installing beyond what the PC build needs. `--run`
+uses Dolphin from Flathub (`flatpak install flathub org.DolphinEmu.dolphin-emu`). On a Wii,
+copy `wii/build/apps/` to the root of an SD card and start it from the Homebrew Channel.
+
+| Wii Remote | Action |
+|---|---|
+| Point | Aim |
+| B (trigger) or A | Shoot / join |
+| + | Start the ride |
+| HOME | Pause / resume |
+| − (while paused) | Back to the title screen |
+
+Connect remotes as you would for any game (press the red sync button or 1+2 for a remote
+the Wii already knows). The console's RESET button quits to the Homebrew Channel; POWER
+turns it off. High scores last until you quit. The picture is 4:3; on a TV set to 16:9 it's
+stretched.
+
+Both console versions can be built with computer players, which join, ride and shoot by
+themselves: `CMAKE_ARGS=-DHH_BOTS=2 wii/build.sh` (or `ps1/build.sh`).
+`wii/test/run.sh` records a run in Dolphin without showing a window and saves PNG frames.
+
 ## Code tour
 
 | File | What |
@@ -275,11 +311,14 @@ with scripted button presses and saves screenshots.
 | `src/highscores.rs` | The top-ten table and its save file |
 | `src/main.rs` | Window, input, game loop, command-line flags |
 | `frame/` | Steam Frame: cross-compiling container, start script, headless devkit upload |
-| `src/ps1export.rs` | `--export-ps1`: the world, camera path, targets, models, textures and sound for the PS1 |
+| `src/console_export.rs` | `--export-ps1`, `--export-wii`: the world, camera path, targets, models, textures and sound for the consoles |
+| `shared/game.c` | Consoles: the game itself (a port of `src/game.rs`), with `cam.c` and `util.c` |
+| `shared/*.h` | Consoles: the data formats and what each console provides (graphics, sound, controllers) |
 | `ps1/src/gfx.c` | PS1 renderer: streamed world on the GTE, models, sparks, mist, HUD |
 | `ps1/src/stream.c` | PS1: reads the world from the CD as the cart moves |
-| `ps1/src/game.c` | PS1: the game itself (a port of `src/game.rs`) |
 | `ps1/src/audio.c`, `input.c` | PS1: music and effects on the sound chip; GunCons and pads |
+| `wii/src/gfx.c` | Wii renderer on GX: the world, models, sparks, mist, HUD |
+| `wii/src/audio.c`, `input.c` | Wii: the PC's music and effects with ASND; Wii Remotes |
 
 Tuning knobs: spawn pools and density in `Game::build_schedule`, points/hit sizes in `Kind`,
 boss health in `update` (`40 + 22 × players`), track shape and section speeds in `track.rs`.

@@ -152,3 +152,15 @@ void input_update(int frames) {
 		in->aim_valid = 1;
 	}
 }
+
+void input_rumble(int port, int ms) {
+	(void) port, (void) ms;   // (GunCons don't; DualShock motors aren't driven)
+}
+
+const char *input_join_label(int port) {
+	switch (inputs[port].dev) {
+	case DEV_GUN: return "PULL TRIGGER";
+	case DEV_PAD: return "PRESS X";
+	default: return "NO CONTROLLER";
+	}
+}

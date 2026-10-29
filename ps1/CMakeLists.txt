@@ -15,18 +15,25 @@ if(NOT HH_DATA)
 	message(FATAL_ERROR "Set HH_DATA to the directory written by haunted_hollow --export-ps1")
 endif()
 
+# The game itself is shared with the Wii version (../shared); this directory has
+# the PS1's graphics, sound, controllers and CD streaming.
 psn00bsdk_add_executable(
 	hollow GPREL
 	src/main.c
-	src/game.c
 	src/gfx.c
-	src/cam.c
 	src/stream.c
 	src/audio.c
 	src/input.c
-	src/util.c
+	../shared/game.c
+	../shared/cam.c
+	../shared/util.c
 )
+target_include_directories(hollow PRIVATE src ../shared)
 target_compile_options(hollow PRIVATE -O2 -Wall -Wno-misleading-indentation -fno-strict-aliasing)
+# -DHH_BOTS=N puts N computer players on the first controllers (attract mode, tests).
+set(HH_BOTS 0 CACHE STRING "Computer players")
+target_compile_definitions(hollow PRIVATE HH_BOTS=${HH_BOTS})
+
 # -DHH_DEBUG=ON shows frame rate and timings in the corner.
 option(HH_DEBUG "Show frame rate and timings" OFF)
 if(HH_DEBUG)

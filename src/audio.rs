@@ -101,6 +101,20 @@ impl Bank {
         }
     }
 
+    /// The effects, in `Sfx` order (for the console export).
+    pub fn sfx(&self) -> &[Buf] {
+        &self.sfx
+    }
+
+    /// The songs in `Music` order, and whether each loops (for the console export).
+    pub fn songs(&self) -> [(&Buf, bool); 5] {
+        [Music::Title, Music::Ride, Music::Boss, Music::Victory, Music::Results].map(|m| self.music(m))
+    }
+
+    pub fn cart(&self) -> &Buf {
+        &self.cart
+    }
+
     fn music(&self, m: Music) -> (&Buf, bool) {
         match m {
             Music::Title => (&self.title, true),

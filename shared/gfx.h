@@ -4,7 +4,7 @@
 #pragma once
 
 #include <stdint.h>
-#include <psxgte.h>
+#include "platform.h"
 #include "data.h"
 
 #define SCREEN_W 320

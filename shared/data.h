@@ -5,7 +5,7 @@
 #pragma once
 
 #include <stdint.h>
-#include <psxgte.h>
+#include "platform.h"
 
 #define UNIT        64    // world units per block
 #define MODEL_UNIT  256   // model units per block
@@ -81,8 +81,9 @@ typedef struct {
 
 typedef struct {
 	char     tag[4];
-	uint16_t n_one, n_two, n_summon, pad;
-	// SpawnRec one[n_one], two[n_two], summon[n_summon];
+	uint16_t n[4];             // targets for 1, 2, 3, 4 riders (0 if not recorded)
+	uint16_t n_summon, pad;
+	// SpawnRec ride[4][n[...]] (one after another), summon[n_summon];
 } SpawnHeader;
 
 typedef struct {
