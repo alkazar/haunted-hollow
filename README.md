@@ -273,8 +273,7 @@ wii/build.sh --run    # build, then play it in Dolphin
 
 It compiles in devkitPro's `devkitpro/devkitppc` container with podman (or
 `CONTAINER=docker`), so nothing needs installing beyond what the PC build needs. `--run`
-uses Dolphin from Flathub (`flatpak install flathub org.DolphinEmu.dolphin-emu`). On a Wii,
-copy `wii/build/apps/` to the root of an SD card and start it from the Homebrew Channel.
+uses Dolphin from Flathub (`flatpak install flathub org.DolphinEmu.dolphin-emu`).
 
 | Wii Remote | Action |
 |---|---|
@@ -284,10 +283,37 @@ copy `wii/build/apps/` to the root of an SD card and start it from the Homebrew 
 | HOME | Pause / resume |
 | − (while paused) | Back to the title screen |
 
-Connect remotes as you would for any game (press the red sync button or 1+2 for a remote
-the Wii already knows). The console's RESET button quits to the Homebrew Channel; POWER
-turns it off. High scores last until you quit. When the Wii is set to 16:9 (Wii Settings →
-Screen → Widescreen) the game plays in true 16:9, with a wider view, as on the PC.
+The console's RESET button quits to the Homebrew Channel; POWER turns it off. High scores
+last until you quit. When the Wii is set to 16:9 (Wii Settings → Screen → Widescreen) the
+game plays in true 16:9, with a wider view, as on the PC.
+
+### Playing on a real Wii
+
+It runs from the [Homebrew Channel](https://wiibrew.org/wiki/Homebrew_Channel) (a Wii U's
+Wii mode works too). If your Wii doesn't have it yet, <https://wii.hacks.guide> picks the
+right way to install it for your system version.
+
+1. Run `wii/build.sh`.
+2. Copy the `wii/build/apps/` folder to the root of an SD or SDHC card formatted FAT32, so
+   the game ends up in `SD:/apps/hauntedhollow/boot.dol` (with its `meta.xml`).
+3. Put the card in the Wii, open the Homebrew Channel, pick **Haunted Hollow** and choose
+   **Load**.
+
+The Wii Remotes aim with the **sensor bar**, so it needs to be plugged in and placed above
+or below the TV as usual. Remotes already paired with the Wii connect when you press a
+button; to add a new one, press the red sync button on the console, then the one inside
+the remote's battery cover. For the sharpest picture use component cables (or an HDMI
+adapter) and set Wii Settings → Screen → TV Resolution to EDTV/HDTV (480p): the game
+outputs whatever the Wii is set to.
+
+To try a new build without moving the SD card, open the Homebrew Channel on the Wii, look up
+its IP address (Wii Settings → Internet) and send the game over Wi-Fi with devkitPro's
+`wiiload`. It starts straight away:
+
+```sh
+podman run --rm -v "$PWD:/src:z" -w /src -e WIILOAD=tcp:<wii-ip> \
+  docker.io/devkitpro/devkitppc:latest /opt/devkitpro/tools/bin/wiiload wii/build/hollow.dol
+```
 
 Both console versions can be built with computer players, which join, ride and shoot by
 themselves: `CMAKE_ARGS=-DHH_BOTS=2 wii/build.sh` (or `ps1/build.sh`).
