@@ -4,6 +4,8 @@
 # recording. Build with CMAKE_ARGS=-DHH_BOTS=2 to have computer players play.
 #
 #   wii/test/run.sh OUT_DIR SECONDS [STEP]
+#
+# WIDE=1 sets the emulated Wii to 16:9.
 set -e
 out=$1
 secs=$2
@@ -17,6 +19,7 @@ mkdir -p "$user"
 cp "$here/build/hollow.dol" "$out/hollow.dol"
 QT_QPA_PLATFORM=offscreen timeout "$secs" flatpak run --filesystem="$out" org.DolphinEmu.dolphin-emu \
 	-u "$user" -b -v Vulkan -C Dolphin.Movie.DumpFrames=True -C Dolphin.Core.EmulationSpeed=0 \
+	-C SYSCONF.IPL.AR=${WIDE:+True}${WIDE:-False} \
 	-e "$out/hollow.dol" > "$out/dolphin.log" 2>&1 || true
 avi=$(find "$user" -name '*.avi' | head -1)
 ffmpeg -v quiet -i "$avi" -vf "select='not(mod(n\,$step))'" -vsync vfr "$out/f_%03d.png" || true

@@ -11,6 +11,11 @@
 // Four Wii Remotes.
 #define PORTS 4
 
+// 427 wide when the Wii is set to 16:9 (the picture is the usual 640x480, stretched
+// by the TV), else 320; set by gfx_init from the console's settings.
+extern int wii_screen_w;
+#define SCREEN_W wii_screen_w
+
 // The shared code's fixed-point types (named as in the PS1's SDK).
 typedef struct { int16_t vx, vy, vz, pad; } SVECTOR;
 typedef struct { int16_t m[3][3]; int32_t t[3]; } MATRIX;

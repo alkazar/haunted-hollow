@@ -7,7 +7,11 @@
 #include "platform.h"
 #include "data.h"
 
+// The HUD's width: 320 for 4:3, unless the console says otherwise (the Wii in
+// 16:9 makes it 427). The game lays everything out relative to it, as on the PC.
+#ifndef SCREEN_W
 #define SCREEN_W 320
+#endif
 #define SCREEN_H 240
 #define FINE     256
 #define OT_LEN   1024

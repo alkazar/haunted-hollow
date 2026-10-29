@@ -286,12 +286,13 @@ copy `wii/build/apps/` to the root of an SD card and start it from the Homebrew 
 
 Connect remotes as you would for any game (press the red sync button or 1+2 for a remote
 the Wii already knows). The console's RESET button quits to the Homebrew Channel; POWER
-turns it off. High scores last until you quit. The picture is 4:3; on a TV set to 16:9 it's
-stretched.
+turns it off. High scores last until you quit. When the Wii is set to 16:9 (Wii Settings →
+Screen → Widescreen) the game plays in true 16:9, with a wider view, as on the PC.
 
 Both console versions can be built with computer players, which join, ride and shoot by
 themselves: `CMAKE_ARGS=-DHH_BOTS=2 wii/build.sh` (or `ps1/build.sh`).
-`wii/test/run.sh` records a run in Dolphin without showing a window and saves PNG frames.
+`wii/test/run.sh` records a run in Dolphin without showing a window and saves PNG frames
+(`WIDE=1` sets the emulated Wii to 16:9).
 
 ## Code tour
 

@@ -1,6 +1,7 @@
 // Rendering on the Wii's GX: the world straight from the exported meshlets (all in
 // memory), voxel models, boxes, sparks, mist and the HUD. The picture is 640x480;
-// the HUD and everything the game works out on screen use 320x240 like the PS1.
+// the HUD and everything the game works out on screen use 320x240 like the PS1, or
+// 427x240 when the Wii is set to 16:9 (a wider view, as on the PC).
 // Fog is the GPU's own; the rider's lantern is added to vertex colours here.
 // Vertex colours are on the PS1's scale (128 = 1.0), doubled by the TEV.
 
@@ -20,6 +21,8 @@
 #define LAMP_RANGE 20.0f
 // Small details further than this aren't drawn.
 #define DETAIL_FAR 24.0f
+
+int wii_screen_w = 320;
 
 static GXRModeObj *rmode;
 static void *xfb[2];
@@ -159,6 +162,10 @@ void gfx_init(void) {
 	GX_SetCullMode(GX_CULL_NONE);
 
 	float aspect = 4.0f / 3.0f;
+	if (CONF_GetAspectRatio() == CONF_ASPECT_16_9) {
+		aspect = 16.0f / 9.0f;
+		wii_screen_w = 427;
+	}
 	guPerspective(proj3d, 70.0f, aspect, NEAR, FAR);
 	tan_v = tanf(35.0f * (float) M_PI / 180.0f);
 	tan_h = tan_v * aspect;
