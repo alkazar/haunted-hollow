@@ -69,7 +69,7 @@ pub fn note_freq(name: &str) -> f32 {
     440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0)
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Inst {
     Organ,
     Theremin,
@@ -146,7 +146,7 @@ pub fn note(buf: &mut Buf, start: f32, freq: f32, dur: f32, inst: Inst, vol: f32
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Drum {
     Kick,
     Snare,
@@ -235,16 +235,26 @@ fn semis(f: f32, s: i32) -> f32 {
     f * 2f32.powf(s as f32 / 12.0)
 }
 
-/// Renders a seamless loop of the song (`passes` repetitions, later passes varied).
-pub fn render_song(s: &Song, looping: bool) -> Buf {
+/// One note or drum hit of a song (times in seconds from the start).
+#[derive(Clone, Copy)]
+pub enum Ev {
+    Note { t: f32, freq: f32, dur: f32, inst: Inst, vol: f32, pan: f32 },
+    Drum { t: f32, drum: Drum, vol: f32, pan: f32, seed: u32 },
+}
+
+/// Every note and drum hit of the song (`passes` repetitions, later passes varied),
+/// and the length of the loop in seconds.
+pub fn song_events(s: &Song) -> (Vec<Ev>, f32) {
     let beat = 60.0 / s.bpm;
     let bar = beat * 4.0;
     let bars = s.chords.len();
     let pass_len = bar * bars as f32;
     let total = pass_len * s.passes as f32;
-    let mut buf = Buf::new(if looping { total } else { total + 2.0 });
     let mel = parse_melody(s.melody);
     let step = bar / 16.0;
+    let mut ev = vec![];
+    let mut note = |t, freq, dur, inst, vol, pan| ev.push(Ev::Note { t, freq, dur, inst, vol, pan });
+    let mut drums = vec![];
     for pass in 0..s.passes {
         let t0 = pass as f32 * pass_len;
         // Melody (an octave higher with a softer double on later passes).
@@ -253,9 +263,9 @@ pub fn render_song(s: &Song, looping: bool) -> Buf {
             let d = beats * beat;
             if let Some(n) = n {
                 let f = note_freq(n);
-                note(&mut buf, t, f, d * 0.9, s.lead, s.lead_vol, 0.15, looping);
+                note(t, f, d * 0.9, s.lead, s.lead_vol, 0.15);
                 if pass % 2 == 1 {
-                    note(&mut buf, t, f * 2.0, d * 0.8, Inst::Bell, s.lead_vol * 0.25, -0.3, looping);
+                    note(t, f * 2.0, d * 0.8, Inst::Bell, s.lead_vol * 0.25, -0.3);
                 }
             }
             t += d;
@@ -266,7 +276,7 @@ pub fn render_song(s: &Song, looping: bool) -> Buf {
             // Organ chord.
             if s.organ_vol > 0.0 {
                 for (k, iv) in [0, if minor { 3 } else { 4 }, 7].iter().enumerate() {
-                    note(&mut buf, tb, semis(rf, *iv), bar * 0.95, s.chord_inst, s.organ_vol, -0.4 + k as f32 * 0.4, looping);
+                    note(tb, semis(rf, *iv), bar * 0.95, s.chord_inst, s.organ_vol, -0.4 + k as f32 * 0.4);
                 }
             }
             // Bass.
@@ -278,34 +288,54 @@ pub fn render_song(s: &Song, looping: bool) -> Buf {
                     b't' => if minor { 3 } else { 4 },
                     _ => continue,
                 };
-                note(&mut buf, tb + i as f32 * step, semis(rf, iv - 12), step * 1.6, Inst::Bass, 0.55, 0.0, looping);
+                note(tb + i as f32 * step, semis(rf, iv - 12), step * 1.6, Inst::Bass, 0.55, 0.0);
             }
             // Drums.
             for (i, ((k, sn), h)) in s.kick.bytes().zip(s.snare.bytes()).zip(s.hat.bytes()).enumerate() {
-                let ts = tb + i as f32 * step;
+                let t = tb + i as f32 * step;
                 let seed = (pass * 1000 + bi as u32 * 16 + i as u32) * 7919 + 1;
+                let mut drum = |drum, vol, pan, seed| drums.push(Ev::Drum { t, drum, vol, pan, seed });
                 if k == b'x' {
-                    drum(&mut buf, ts, Drum::Kick, 0.7, 0.0, looping, seed);
+                    drum(Drum::Kick, 0.7, 0.0, seed);
                 }
                 if k == b't' {
-                    drum(&mut buf, ts, Drum::Tom, 0.5, 0.3, looping, seed);
+                    drum(Drum::Tom, 0.5, 0.3, seed);
                 }
                 if sn == b'x' {
-                    drum(&mut buf, ts, Drum::Snare, 0.35, 0.1, looping, seed + 3);
+                    drum(Drum::Snare, 0.35, 0.1, seed + 3);
                 }
                 if sn == b'c' {
-                    drum(&mut buf, ts, Drum::Clap, 0.4, -0.1, looping, seed + 3);
+                    drum(Drum::Clap, 0.4, -0.1, seed + 3);
                 }
                 if h == b'x' {
-                    drum(&mut buf, ts, Drum::Hat, 0.25, 0.35, looping, seed + 5);
+                    drum(Drum::Hat, 0.25, 0.35, seed + 5);
                 }
             }
             // Spooky bells on alternating bars.
             if s.bells && bi % 2 == 0 {
-                note(&mut buf, tb, semis(rf, 24), beat * 2.0, Inst::Bell, 0.18, 0.5, looping);
+                note(tb, semis(rf, 24), beat * 2.0, Inst::Bell, 0.18, 0.5);
             }
         }
     }
+    ev.extend(drums);
+    (ev, total)
+}
+
+/// Renders events into a buffer.
+pub fn render_events(buf: &mut Buf, events: &[Ev], wrap: bool) {
+    for e in events {
+        match *e {
+            Ev::Note { t, freq, dur, inst, vol, pan } => note(buf, t, freq, dur, inst, vol, pan, wrap),
+            Ev::Drum { t, drum: d, vol, pan, seed } => drum(buf, t, d, vol, pan, wrap, seed),
+        }
+    }
+}
+
+/// Renders a seamless loop of the song.
+pub fn render_song(s: &Song, looping: bool) -> Buf {
+    let (events, total) = song_events(s);
+    let mut buf = Buf::new(if looping { total } else { total + 2.0 });
+    render_events(&mut buf, &events, looping);
     buf.normalize(0.8);
     buf
 }
@@ -383,18 +413,25 @@ pub const RESULTS: Song = Song {
     passes: 2,
 };
 
-pub fn victory() -> Buf {
-    let mut b = Buf::new(3.5);
+/// The victory fanfare's notes and hits.
+pub fn victory_events() -> Vec<Ev> {
+    let mut ev = vec![];
     let seq = [("D5", 0.0, 0.12), ("F#5", 0.12, 0.12), ("A5", 0.24, 0.12), ("D6", 0.36, 0.4), ("A5", 0.9, 0.15), ("D6", 1.05, 1.2)];
     for (n, t, d) in seq {
-        note(&mut b, t, note_freq(n), d, Inst::Brass, 0.7, 0.0, false);
-        note(&mut b, t, note_freq(n) * 2.0, d, Inst::Bell, 0.3, 0.3, false);
+        ev.push(Ev::Note { t, freq: note_freq(n), dur: d, inst: Inst::Brass, vol: 0.7, pan: 0.0 });
+        ev.push(Ev::Note { t, freq: note_freq(n) * 2.0, dur: d, inst: Inst::Bell, vol: 0.3, pan: 0.3 });
     }
     for n in ["D4", "F#4", "A4"] {
-        note(&mut b, 1.05, note_freq(n), 1.5, Inst::Organ, 0.3, -0.3, false);
+        ev.push(Ev::Note { t: 1.05, freq: note_freq(n), dur: 1.5, inst: Inst::Organ, vol: 0.3, pan: -0.3 });
     }
-    drum(&mut b, 1.05, Drum::Kick, 0.8, 0.0, false, 3);
-    drum(&mut b, 1.05, Drum::Clap, 0.6, 0.0, false, 5);
+    ev.push(Ev::Drum { t: 1.05, drum: Drum::Kick, vol: 0.8, pan: 0.0, seed: 3 });
+    ev.push(Ev::Drum { t: 1.05, drum: Drum::Clap, vol: 0.6, pan: 0.0, seed: 5 });
+    ev
+}
+
+pub fn victory() -> Buf {
+    let mut b = Buf::new(3.5);
+    render_events(&mut b, &victory_events(), false);
     b.normalize(0.85);
     b
 }

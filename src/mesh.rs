@@ -4,6 +4,7 @@
 use crate::atlas::{tile_uv, T_WHITE};
 use crate::vk::Vertex;
 use glam::{Mat4, Vec3};
+use std::collections::HashMap;
 
 /// Cube face definitions: (normal, origin corner, right, up) on the unit cube [0,1]^3.
 /// Vertices are o, o+r, o+r+u, o+u (counter-clockwise seen from outside).
@@ -80,6 +81,10 @@ struct MQuad {
 pub struct Model {
     quads: Vec<MQuad>,
     pub size: Vec3,
+    /// The voxels it was built from, (w, h, d) and the voxel size (for exporting).
+    grid: Vec<Option<Vox>>,
+    dims: (i32, i32, i32),
+    scale: f32,
 }
 
 impl Model {
@@ -128,7 +133,70 @@ impl Model {
                 }
             }
         }
-        Model { quads, size: Vec3::new(w as f32, h as f32, d as f32) * scale }
+        Model { quads, size: Vec3::new(w as f32, h as f32, d as f32) * scale, grid, dims: (w, h, d), scale }
+    }
+
+    /// The model's faces with neighbouring faces of the same colour merged into
+    /// rectangles (fewer polygons, for the PS1). Each rectangle gets the per-voxel
+    /// colour variation of its first voxel. Returns (corners, normal, colour, glow).
+    pub fn merged_faces(&self) -> Vec<([Vec3; 4], Vec3, [f32; 3], f32)> {
+        let (w, h, d) = self.dims;
+        let get = |p: glam::IVec3| -> Option<Vox> {
+            if p.x < 0 || p.y < 0 || p.z < 0 || p.x >= w || p.y >= h || p.z >= d {
+                None
+            } else {
+                self.grid[((p.z * h + p.y) * w + p.x) as usize]
+            }
+        };
+        let key = |v: Vox| ([0, 1, 2].map(|i| (v.color[i] * 255.0).round() as i32), (v.glow * 255.0).round() as i32);
+        let origin = Vec3::new(w as f32 * 0.5, 0.0, d as f32 * 0.5);
+        let mut out = vec![];
+        for (n, o, r, u) in FACES.iter() {
+            let (n, r, u) = (glam::IVec3::from(*n), Vec3::from(*r).as_ivec3(), Vec3::from(*u).as_ivec3());
+            // Exposed faces of this direction, keyed by (slice, i along r, j along u).
+            let mut faces: HashMap<(i32, i32, i32), (glam::IVec3, Vox)> = HashMap::new();
+            for z in 0..d {
+                for y in 0..h {
+                    for x in 0..w {
+                        let p = glam::IVec3::new(x, y, z);
+                        let Some(v) = get(p) else { continue };
+                        if get(p + n).is_some() {
+                            continue;
+                        }
+                        faces.insert((p.dot(n), p.dot(r), p.dot(u)), (p, v));
+                    }
+                }
+            }
+            let mut keys: Vec<_> = faces.keys().copied().collect();
+            keys.sort_by_key(|k| (k.0, k.2, k.1));
+            let mut used = std::collections::HashSet::new();
+            for k0 in keys {
+                if used.contains(&k0) {
+                    continue;
+                }
+                let (p0, v0) = faces[&k0];
+                let same = |k: (i32, i32, i32)| !used.contains(&k) && faces.get(&k).is_some_and(|f| key(f.1) == key(v0));
+                let mut a = 1;
+                while same((k0.0, k0.1 + a, k0.2)) {
+                    a += 1;
+                }
+                let mut b = 1;
+                while (0..a).all(|i| same((k0.0, k0.1 + i, k0.2 + b))) {
+                    b += 1;
+                }
+                for j in 0..b {
+                    for i in 0..a {
+                        used.insert((k0.0, k0.1 + i, k0.2 + j));
+                    }
+                }
+                let base = p0.as_vec3() + Vec3::from(*o);
+                let (ra, ub) = ((r * a).as_vec3(), (u * b).as_vec3());
+                let p = [base, base + ra, base + ra + ub, base + ub].map(|p| (p - origin) * self.scale);
+                let jit = 0.93 + hash3(p0.x, p0.y, p0.z) * 0.12;
+                out.push((p, n.as_vec3(), v0.color.map(|c| c * jit), v0.glow));
+            }
+        }
+        out
     }
 
     /// Emits the model transformed by `m`. `flash` (0..1) tints toward white (hit feedback).

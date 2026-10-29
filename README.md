@@ -208,6 +208,55 @@ The official client works too: Title Upload with **Local Folder**
 `target/frame/haunted-hollow`, **Start Command** `haunted-hollow.sh` (which adds `--vr`)
 and an ARM64 Steam Linux Runtime.
 
+## PlayStation version
+
+`ps1/` is a port to the original PlayStation, for **1–2 players with Namco GunCon light guns**
+(or ordinary pads). It rides through the same world, with the same targets popping up at the
+same moments, the same models, textures, music and sound effects: the PC game exports all of
+them (`--export-ps1`) and the PS1 code, written in C with
+[PSn00bSDK](https://github.com/Lameguy64/PSn00bSDK), plays them back.
+
+```sh
+ps1/build.sh          # -> ps1/build/haunted-hollow.bin + .cue
+ps1/build.sh --run    # build, then play it in PCSX-Redux
+```
+
+It needs what the PC build needs plus `cmake`, `ninja`, `curl` and `unzip`. The first run
+fetches PSn00bSDK 0.24 (with its MIPS GCC) into `ps1/tools/`, and `--run` fetches PCSX-Redux
+there too. Burn the `.bin`/`.cue` to a CD-R or load it on an optical drive emulator. Some
+consoles (Japanese ones, and PAL ones with a modchip) only boot discs with license data;
+see `ps1/iso.xml`.
+
+| GunCon | Pad | Action |
+|---|---|---|
+| Trigger | ✕ (or □, L1, R1, L2, R2) | Shoot / join |
+| — | D-pad or left stick | Move the crosshair |
+| A (left side) | START | Start the ride / pause |
+| B (right side), while paused | SELECT, while paused | Back to the title screen |
+
+* **Light guns need a CRT TV.** Plug the GunCon into a controller port and its yellow plug
+  into the console's video out. Each rider's first shot at their practice target lines their
+  gun up, so aim carefully at it.
+* A light gun can only tell where it points when it sees the picture, and the ride is dark.
+  So when the trigger is pulled and the gun can't see the screen, the next frame flashes white
+  (at most three times a second). There is no flash when it can already see the screen, for
+  example when aiming at a bright target.
+* Differences from the PC: two riders (one per port), fog closes in sooner, the clouds are
+  gone, and high scores last until the console is switched off (no memory card).
+
+How it works: the world doesn't fit in the PS1's 2 MB of RAM, so it streams from the CD as
+the cart moves. The exporter keeps only the faces a rider can see from the track and merges
+neighbouring faces whose lighting blends smoothly. It then packs them into 2 KB pieces, one
+per CD sector, stored in the order the ride needs them, and lists which pieces each 2 m
+stretch of track can see. The PS1 reads ahead about 16 m and drops pieces the cart has passed.
+Fog and the rider's lantern are worked out per vertex on the GTE, and the songs are note
+lists played on sampled instruments.
+
+In PCSX-Redux it runs at about 8–12 frames a second. That emulator's timing is approximate,
+and it hasn't been measured on a real console yet. `CMAKE_ARGS=-DHH_DEBUG=ON ps1/build.sh`
+shows the frame rate and timings. `ps1/test/run.sh` plays the disc headless in PCSX-Redux
+with scripted button presses and saves screenshots.
+
 ## Code tour
 
 | File | What |
@@ -226,6 +275,11 @@ and an ARM64 Steam Linux Runtime.
 | `src/highscores.rs` | The top-ten table and its save file |
 | `src/main.rs` | Window, input, game loop, command-line flags |
 | `frame/` | Steam Frame: cross-compiling container, start script, headless devkit upload |
+| `src/ps1export.rs` | `--export-ps1`: the world, camera path, targets, models, textures and sound for the PS1 |
+| `ps1/src/gfx.c` | PS1 renderer: streamed world on the GTE, models, sparks, mist, HUD |
+| `ps1/src/stream.c` | PS1: reads the world from the CD as the cart moves |
+| `ps1/src/game.c` | PS1: the game itself (a port of `src/game.rs`) |
+| `ps1/src/audio.c`, `input.c` | PS1: music and effects on the sound chip; GunCons and pads |
 
 Tuning knobs: spawn pools and density in `Game::build_schedule`, points/hit sizes in `Kind`,
 boss health in `update` (`40 + 22 × players`), track shape and section speeds in `track.rs`.

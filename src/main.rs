@@ -8,6 +8,7 @@ mod game;
 mod highscores;
 mod hud;
 mod mesh;
+mod ps1export;
 mod rng;
 mod track;
 mod vk;
@@ -39,6 +40,7 @@ struct Args {
     boss: bool,
     mute: bool,
     dump_audio: Option<String>,
+    export_ps1: Option<String>,
     vr: bool,
 }
 
@@ -56,6 +58,7 @@ fn parse_args() -> Args {
         boss: false,
         mute: false,
         dump_audio: None,
+        export_ps1: None,
         vr: false,
     };
     let mut windowed = false;
@@ -80,6 +83,7 @@ fn parse_args() -> Args {
             "--mute" => a.mute = true,
             "--vr" => a.vr = true,
             "--dump-audio" => a.dump_audio = Some(val(&mut i)),
+            "--export-ps1" => a.export_ps1 = Some(val(&mut i)),
             "--size" => {
                 let v = val(&mut i);
                 if let Some((w, h)) = v.split_once('x') {
@@ -461,6 +465,13 @@ fn main() {
         match bank.dump(dir) {
             Ok(()) => eprintln!("wrote music and sound effects to {dir}"),
             Err(e) => eprintln!("could not write audio: {e}"),
+        }
+        return;
+    }
+    if let Some(dir) = &args.export_ps1 {
+        if let Err(e) = ps1export::export(dir) {
+            eprintln!("could not export the PS1 data: {e}");
+            std::process::exit(1);
         }
         return;
     }

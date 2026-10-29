@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CD image layout for mkpsxiso (paths are relative to the build directory). -->
+<iso_project>
+	<track type="data">
+		<identifiers
+			system			="PLAYSTATION"
+			volume			="HAUNTED_HOLLOW"
+			volume_set		="HAUNTED_HOLLOW"
+			publisher		="HAUNTED HOLLOW"
+			data_preparer	="PSN00BSDK ${PSN00BSDK_VERSION}"
+			application		="PLAYSTATION"
+			copyright		="README.TXT;1"
+		/>
+		<!--
+			Some consoles (Japanese ones, and PAL ones with a modchip) only boot
+			discs with license data. Add it here if you have it:
+			<license file="${PROJECT_SOURCE_DIR}/license.dat" />
+		-->
+		<directory_tree>
+			<file name="SYSTEM.CNF"	type="data" source="${PROJECT_SOURCE_DIR}/system.cnf" />
+			<file name="HOLLOW.EXE"	type="data" source="hollow.exe" />
+			<file name="ATLAS.BIN"	type="data" source="${HH_DATA}/ATLAS.BIN" />
+			<file name="SOUND.BIN"	type="data" source="${HH_DATA}/SOUND.BIN" />
+			<file name="WORLD.BIN"	type="data" source="${HH_DATA}/WORLD.BIN" />
+			<dummy sectors="1024"/>
+		</directory_tree>
+	</track>
+</iso_project>

@@ -17,6 +17,8 @@ USAGE: haunted_hollow [OPTIONS]
                        B/Y (while paused) = back to the title screen, Ctrl+C quits.
   --dump-audio DIR     Write all music and sound effects as WAV files and exit
                        (sound uses ALSA; set HAUNTED_ALSA_DEVICE to pick a device)
+  --export-ps1 DIR     Write the data for the PlayStation version and exit
+                       (ps1/build.sh does this for you)
   --version, -V        Print the version and exit
 
 Wii Remote calibration (sensor bar):

@@ -261,6 +261,22 @@ struct Spawn {
     swarm: bool,
 }
 
+/// A target as it appeared, for the PS1 port (which replays the ride's spawns).
+#[derive(Clone, Copy, Debug)]
+pub struct SpawnRecord {
+    /// Ride time (or boss time) when it appeared.
+    pub t: f32,
+    pub kind: Kind,
+    pub home: Vec3,
+    pub a: Vec3,
+    pub b: Vec3,
+    pub life: f32,
+    pub phase: f32,
+    pub variant: usize,
+    /// Where the Pumpkin King was when he summoned it.
+    pub boss: Option<Vec3>,
+}
+
 /// What the renderer needs for one frame.
 pub struct FrameOut {
     pub viewproj: Mat4,
@@ -342,6 +358,8 @@ pub struct Game {
     pub fps: f32,
     pub debug_lines: Vec<String>,
     shake: f32,
+    /// Every target spawned, when recording for the PS1 export.
+    spawn_log: Option<Vec<SpawnRecord>>,
 }
 
 /// When (seconds into the victory) the boss doors start to open, and how long it takes.
@@ -436,6 +454,7 @@ impl Game {
             high_new: vec![],
             cam_dir: Vec3::Z,
             cam_up: Vec3::Y,
+            spawn_log: None,
         };
         g.fires = g.world.cells_of(crate::world::b::FIRE);
         g.cauldrons = g.world.cells_of(crate::world::b::CAULDRON);
@@ -975,6 +994,7 @@ impl Game {
                 self.lane += 1;
                 self.spawn_sound(t.kind, t.home);
                 self.spawn_kinds[t.kind.index()] += 1;
+                self.log_spawn(&t, near);
                 self.targets.push(t);
                 self.spawn_stats.0 += 1;
                 true
@@ -1198,11 +1218,69 @@ impl Game {
                 self.sfx(Sfx::Squeak, 0.22, pan, rng.range(0.85, 1.35));
                 self.spawn_kinds[Kind::Bat.index()] += 1;
                 self.spawn_stats.0 += 1;
+                self.log_spawn(&t, None);
                 self.targets.push(t);
                 return;
             }
         }
         self.spawn_stats.1 += 1;
+    }
+
+    fn log_spawn(&mut self, t: &Target, boss: Option<Vec3>) {
+        let at = if boss.is_some() { self.boss.as_ref().map_or(0.0, |b| b.t) } else { self.ride_t };
+        if let Some(log) = self.spawn_log.as_mut() {
+            log.push(SpawnRecord { t: at, kind: t.kind, home: t.home, a: t.a, b: t.b, life: t.life, phase: t.phase, variant: t.variant, boss });
+        }
+    }
+
+    /// Plays a whole ride with `players` riders who never shoot and returns every target
+    /// that appeared; then the boss fight, hit steadily, and the helpers he summons.
+    pub fn record_spawns(track: Track, world: World, players: usize, screen: Vec2) -> (Vec<SpawnRecord>, Vec<SpawnRecord>) {
+        let mut g = Game::new(track, world, false, 0);
+        g.screen = screen;
+        for p in g.players.iter_mut().take(players) {
+            p.joined = true;
+        }
+        g.spawn_log = Some(vec![]);
+        g.start_ride();
+        let dt = 1.0 / 60.0;
+        while g.state == State::Ride {
+            g.update(dt, &[], screen, None);
+        }
+        let ride = g.spawn_log.replace(vec![]).unwrap_or_default();
+        let mut next_hit = 4.0;
+        while g.state == State::Boss {
+            g.update(dt, &[], screen, None);
+            if g.state_t > next_hit {
+                g.hit_boss(0, None);
+                next_hit += 0.25;
+            }
+        }
+        (ride, g.spawn_log.take().unwrap_or_default())
+    }
+
+    /// Animated scenery, for the PS1 export: fire and cauldron cells, cloud runs, and mist
+    /// puffs as (position, half size, phase, opacity, tint, wander, rise, zone bits).
+    #[allow(clippy::type_complexity)]
+    pub fn scenery(&self) -> (Vec<Vec3>, Vec<Vec3>, Vec<(f32, f32, f32)>, Vec<(Vec3, Vec2, f32, f32, [f32; 3], f32, f32, u8)>) {
+        let mist = self
+            .mist
+            .iter()
+            .map(|p| (p.pos, p.half, p.ph, p.alpha, p.tint, p.wander, p.rise, p.zones.iter().fold(0u8, |m, z| m | 1 << *z as u8)))
+            .collect();
+        (self.fires.clone(), self.cauldrons.clone(), self.clouds.clone(), mist)
+    }
+
+    /// The camera pose during the ride, `t` seconds in: (eye, look direction, up).
+    pub fn ride_pose(&self, t: f32) -> (Vec3, Vec3, Vec3) {
+        let d = self.track.dist_at_time(t);
+        let speed = (self.track.dist_at_time(t + 0.1) - d) * 10.0;
+        self.pose_at(d, speed)
+    }
+
+    /// Camera pose for the cart at track distance `d` (public for the PS1 export).
+    pub fn pose(&self, d: f32, speed: f32) -> (Vec3, Vec3, Vec3) {
+        self.pose_at(d, speed)
     }
 
     fn spawn_sound(&mut self, kind: Kind, at: Vec3) {

@@ -368,6 +368,13 @@ impl World {
     // ------------------------------------------------------------------ meshing
 
     pub fn build_mesh(&self, track: &Track) -> Vec<Vertex> {
+        let mut out = self.build_world_mesh(track);
+        sky(&mut out);
+        out
+    }
+
+    /// The blocks and the track, without the sky (see `sky_mesh`).
+    pub fn build_world_mesh(&self, track: &Track) -> Vec<Vertex> {
         let mut out = Vec::with_capacity(1 << 20);
         for z in Z0..Z1 {
             for y in Y0..Y1 {
@@ -386,7 +393,13 @@ impl World {
             }
         }
         self.mesh_track(&mut out, track);
-        sky(&mut out);
+        out
+    }
+
+    /// Just the track (the last faces of `build_world_mesh`).
+    pub fn track_mesh(&self, track: &Track) -> Vec<Vertex> {
+        let mut out = vec![];
+        self.mesh_track(&mut out, track);
         out
     }
 
@@ -608,6 +621,13 @@ impl World {
             push_box(out, &m, T_DARKPLANK, [1.0; 3], light, 0.0);
         }
     }
+}
+
+/// The moon, its halo and the stars.
+pub fn sky_mesh() -> Vec<Vertex> {
+    let mut out = vec![];
+    sky(&mut out);
+    out
 }
 
 fn sky(out: &mut Vec<Vertex>) {
