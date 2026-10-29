@@ -2327,7 +2327,36 @@ impl Game {
         }
     }
 
+    /// Draws player `i`'s crosshair, if it is showing, and returns the screen point it is on.
+    pub fn draw_crosshair(&self, i: usize, ui: &mut Ui) -> Option<Vec2> {
+        let p = &self.players[i];
+        if matches!(self.state, State::Outro | State::Results | State::HighScores)
+            || !p.aim_visible
+            || (!p.joined && self.state != State::Title)
+        {
+            return None;
+        }
+        // Only riders still entering initials aim at the letter grid.
+        if self.state == State::Initials && !self.initials[i].as_ref().map_or(false, |e| e.done_at.is_none()) {
+            return None;
+        }
+        let unit = ui.unit;
+        let c = PLAYER_COLORS[i];
+        let alpha = if p.joined { 1.0 } else { 0.45 };
+        let size = 16.0 * unit * (1.0 + p.kick * 0.35);
+        ui.sprite(T_RING, p.aim.x, p.aim.y, size + unit * 2.0, [0.0, 0.0, 0.0, 0.7 * alpha]);
+        ui.sprite(T_RING, p.aim.x, p.aim.y, size, [c[0], c[1], c[2], alpha]);
+        ui.rect(p.aim.x - unit, p.aim.y - unit, unit * 2.0, unit * 2.0, [1.0, 1.0, 1.0, alpha]);
+        ui.text(&format!("P{}", i + 1), p.aim.x + size * 0.45, p.aim.y + size * 0.3, 0.9, [c[0], c[1], c[2], alpha], Align::Left);
+        Some(p.aim)
+    }
+
     pub fn draw_ui(&self, ui: &mut Ui) {
+        self.draw_hud(ui, true);
+    }
+
+    /// The HUD, optionally without the crosshairs (VR draws those itself, out in the world).
+    pub fn draw_hud(&self, ui: &mut Ui, crosshairs: bool) {
         let (w, h) = (ui.w, ui.h);
         let unit = ui.unit;
         let white = [1.0, 1.0, 1.0, 1.0];
@@ -2396,22 +2425,9 @@ impl Game {
         }
 
         // Crosshairs on top of everything.
-        if !matches!(self.state, State::Outro | State::Results | State::HighScores) {
-            for (i, p) in self.players.iter().enumerate() {
-                if !p.aim_visible || (!p.joined && self.state != State::Title) {
-                    continue;
-                }
-                // Only riders still entering initials aim at the letter grid.
-                if self.state == State::Initials && !self.initials[i].as_ref().map_or(false, |e| e.done_at.is_none()) {
-                    continue;
-                }
-                let c = PLAYER_COLORS[i];
-                let alpha = if p.joined { 1.0 } else { 0.45 };
-                let size = 16.0 * unit * (1.0 + p.kick * 0.35);
-                ui.sprite(T_RING, p.aim.x, p.aim.y, size + unit * 2.0, [0.0, 0.0, 0.0, 0.7 * alpha]);
-                ui.sprite(T_RING, p.aim.x, p.aim.y, size, [c[0], c[1], c[2], alpha]);
-                ui.rect(p.aim.x - unit, p.aim.y - unit, unit * 2.0, unit * 2.0, [1.0, 1.0, 1.0, alpha]);
-                ui.text(&format!("P{}", i + 1), p.aim.x + size * 0.45, p.aim.y + size * 0.3, 0.9, [c[0], c[1], c[2], alpha], Align::Left);
+        if crosshairs {
+            for i in 0..self.players.len() {
+                self.draw_crosshair(i, ui);
             }
         }
 

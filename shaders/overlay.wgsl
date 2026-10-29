@@ -34,7 +34,8 @@ fn to_target(c: vec3<f32>) -> vec3<f32> {
 @vertex
 fn vs_main(v: VIn) -> VOut {
     var o: VOut;
-    o.clip = pc.viewproj * vec4<f32>(v.pos.xy, 0.0, 1.0);
+    // z is 0 except for VR's crosshair, which floats off the HUD's plane.
+    o.clip = pc.viewproj * vec4<f32>(v.pos, 1.0);
     o.uv = v.uv;
     o.color = v.color;
     return o;

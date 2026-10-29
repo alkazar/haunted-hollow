@@ -4,7 +4,8 @@
 //!   admire the scenery, but targets still appear in front of the (forward-facing) camera.
 //! - The HUD (crosshair, scores, banners) is drawn on a virtual screen that exactly fills the
 //!   game camera's view, `HUD_DIST` ahead, so seen from the cart it lines up with the world.
-//! - The controller is a laser pointer: where its beam meets the virtual screen is the aim.
+//! - The controller is a laser pointer. Its beam ends on a sphere `HUD_DIST` around the rider,
+//!   where the crosshair floats, facing them; the screen point behind it is the game's aim.
 
 use crate::game::{Game, SourceId, SourceInput, FOV_Y, PLAYER_COLORS};
 use crate::{atlas, audio, hud, mesh, step_game, vk as gfx};
@@ -18,7 +19,8 @@ const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_
 /// The game's screen size in VR. Nothing is shown at this resolution: it is just the
 /// coordinate system of the HUD and of aiming (16:9 like a TV, so targets are placed the same).
 const SCREEN: Vec2 = Vec2::new(1280.0, 720.0);
-/// How far ahead of the camera the virtual screen floats (targets appear 6.5-15 m away).
+/// How far ahead of the camera the virtual screen floats, and the radius of the sphere the
+/// crosshair moves on (targets appear 6.5-15 m away).
 const HUD_DIST: f32 = 9.0;
 const NEAR: f32 = 0.05;
 const FAR: f32 = 800.0;
@@ -72,24 +74,52 @@ impl Cart {
         )
     }
 
-    /// Where a ray meets the virtual screen: (HUD pixel, world point).
-    fn aim(&self, from: Vec3, dir: Vec3) -> Option<(Vec2, Vec3)> {
-        let along = dir.dot(self.dir);
+    /// Where a ray from inside the aiming sphere (the controller) comes out of it.
+    fn sphere_hit(&self, from: Vec3, dir: Vec3) -> Vec3 {
+        let o = from - self.eye;
+        let b = o.dot(dir);
+        let t = -b + (b * b - o.length_squared() + HUD_DIST * HUD_DIST).max(0.0).sqrt();
+        from + dir * t
+    }
+
+    /// The HUD pixel the camera sees a world point at, if it is in front of the camera
+    /// (not more than about 87 degrees off its axis).
+    fn pixel(&self, p: Vec3) -> Option<Vec2> {
+        let rel = (p - self.eye).normalize_or_zero();
+        let along = rel.dot(self.dir);
         if along < 0.05 {
             return None;
         }
-        let t = (self.eye + self.dir * HUD_DIST - from).dot(self.dir) / along;
-        if t <= 0.0 {
-            return None;
+        let ndc = Vec2::new(rel.dot(self.right), rel.dot(self.up)) / along / self.half_tan();
+        Some(Vec2::new((ndc.x * 0.5 + 0.5) * SCREEN.x, (0.5 - ndc.y * 0.5) * SCREEN.y))
+    }
+
+    /// The point on the aiming sphere the camera sees at a HUD pixel.
+    fn sphere_point(&self, px: Vec2) -> Vec3 {
+        let ndc = Vec2::new(px.x / SCREEN.x * 2.0 - 1.0, 1.0 - px.y / SCREEN.y * 2.0) * self.half_tan();
+        self.eye + (self.dir + self.right * ndc.x + self.up * ndc.y).normalize() * HUD_DIST
+    }
+
+    /// Where a controller ray aims: the HUD pixel for the game (if any) and the sphere point.
+    fn aim(&self, from: Vec3, dir: Vec3) -> (Option<Vec2>, Vec3) {
+        let hit = self.sphere_hit(from, dir);
+        (self.pixel(hit), hit)
+    }
+
+    /// Moves HUD vertices drawn around pixel `at` onto the aiming sphere, as a flat card
+    /// facing the rider at the point the camera sees `at`, the same size as on the screen.
+    /// The result is still in HUD coordinates (now with depth), so it draws with the HUD.
+    fn onto_sphere(&self, verts: &mut [gfx::Vertex], at: Vec2) {
+        let centre = self.sphere_point(at);
+        let fwd = (centre - self.eye).normalize();
+        let right = fwd.cross(self.up).normalize();
+        let up = right.cross(fwd);
+        let per_px = 2.0 * self.half_tan().y * HUD_DIST / SCREEN.y;
+        let to_hud = self.hud_to_world().inverse();
+        for v in verts {
+            let d = (Vec2::new(v.pos[0], v.pos[1]) - at) * per_px;
+            v.pos = to_hud.transform_point3(centre + right * d.x - up * d.y).to_array();
         }
-        let hit = from + dir * t;
-        let rel = hit - self.eye;
-        let h = self.half_tan() * HUD_DIST;
-        let ndc = Vec2::new(rel.dot(self.right) / h.x, rel.dot(self.up) / h.y);
-        if ndc.x.abs() > 1.5 || ndc.y.abs() > 1.5 {
-            return None;
-        }
-        Some((Vec2::new((ndc.x * 0.5 + 0.5) * SCREEN.x, (0.5 - ndc.y * 0.5) * SCREEN.y), hit))
     }
 }
 
@@ -476,7 +506,7 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
             });
             let input = SourceInput {
                 id: SourceId::Vr,
-                aim: pointer.and_then(|(o, d)| cart.aim(o, d)).map(|a| a.0),
+                aim: pointer.and_then(|(o, d)| cart.aim(o, d).0),
                 fire: fire[hand].0,
                 fire_pressed: fire[hand].1,
                 join: fire[hand].1,
@@ -516,7 +546,13 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
             mist_buf.clear();
             game.draw_mist(&mut mist_buf);
             let mut ui = hud::Ui::new(SCREEN.x, SCREEN.y);
-            game.draw_ui(&mut ui);
+            game.draw_hud(&mut ui, false);
+            for i in 0..game.players.len() {
+                let start = ui.v.len();
+                if let Some(at) = game.draw_crosshair(i, &mut ui) {
+                    cart.onto_sphere(&mut ui.v[start..], at);
+                }
+            }
 
             let (_, views) = session.locate_views(VIEW_TYPE, time, &local).map_err(|e| e.to_string())?;
             let gamma = if linear { 2.0 } else { 1.0 };
@@ -572,7 +608,7 @@ fn draw_pointer(out: &mut Vec<gfx::Vertex>, cart: &Cart, pos: Vec3, rot: Quat) {
     let fwd = rot * Vec3::NEG_Z;
     let wand = Mat4::from_scale_rotation_translation(Vec3::new(0.035, 0.035, 0.14), rot, pos + fwd * 0.03);
     mesh::push_box(out, &wand, atlas::T_DARKPLANK, [1.0, 1.0, 1.0], Vec3::splat(0.6), 0.6);
-    let end = cart.aim(pos, fwd).map(|a| a.1).unwrap_or(pos + fwd * 4.0);
+    let end = cart.sphere_hit(pos, fwd);
     let len = pos.distance(end);
     let beam = Mat4::from_scale_rotation_translation(
         Vec3::new(0.01, 0.01, len),
@@ -603,10 +639,36 @@ mod tests {
         for px in [Vec2::ZERO, Vec2::new(640.0, 360.0), Vec2::new(1100.0, 90.0), SCREEN] {
             let world = cart.hud_to_world().transform_point3(px.extend(0.0));
             assert!(to_pixel(game_viewproj, world).distance(px) < 0.05, "{px}");
-            // Aiming straight from the camera through that point aims at that pixel.
-            let (aim, hit) = cart.aim(cart.eye, (world - cart.eye).normalize()).unwrap();
-            assert!(aim.distance(px) < 0.05 && hit.distance(world) < 1e-3, "{px} -> {aim}");
+            // Aiming straight from the camera through that point aims at that pixel, and the
+            // crosshair sits on the sphere in the same direction.
+            let (aim, hit) = cart.aim(cart.eye, (world - cart.eye).normalize());
+            let aim = aim.unwrap();
+            assert!(aim.distance(px) < 0.05, "{px} -> {aim}");
+            assert!(hit.distance(cart.sphere_point(px)) < 1e-3 && (hit.distance(cart.eye) - HUD_DIST).abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn crosshair_follows_the_sphere() {
+        let (cart, game_viewproj) = cart();
+        // From a controller off to the side, pointing well outside the screen: the beam still
+        // ends on the sphere, and the game aims at the pixel the camera sees that point at.
+        let hand = cart.eye + cart.right * 0.3 - cart.up * 0.4;
+        let dir = (cart.dir + cart.right * 1.5).normalize();
+        let (aim, hit) = cart.aim(hand, dir);
+        assert!((hit.distance(cart.eye) - HUD_DIST).abs() < 1e-3);
+        assert!((hit - hand).normalize().dot(dir) > 0.9999);
+        let aim = aim.unwrap();
+        assert!(aim.x > SCREEN.x && to_pixel(game_viewproj, hit).distance(aim) < 0.05, "{aim}");
+        // Behind the camera there is no screen point to aim at.
+        assert!(cart.aim(hand, -cart.dir).0.is_none());
+        // The crosshair card lands centred on that point, facing the rider.
+        let mut v = [gfx::Vertex { pos: [aim.x, aim.y, 0.0], uv: [0.0; 2], color: [1.0; 4] }; 2];
+        v[1].pos[0] += 10.0;
+        cart.onto_sphere(&mut v, aim);
+        let world = |v: &gfx::Vertex| cart.hud_to_world().transform_point3(Vec3::from_array(v.pos));
+        assert!(world(&v[0]).distance(hit) < 1e-3);
+        assert!((world(&v[1]) - world(&v[0])).dot(hit - cart.eye).abs() < 1e-3);
     }
 
     #[test]
