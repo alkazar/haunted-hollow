@@ -253,10 +253,12 @@ stretch of track can see. The PS1 reads ahead about 16 m and drops pieces the ca
 Fog and the rider's lantern are worked out per vertex on the GTE, and the songs are note
 lists played on sampled instruments.
 
-In PCSX-Redux it runs at about 8–12 frames a second. That emulator's timing is approximate,
-and it hasn't been measured on a real console yet. `CMAKE_ARGS=-DHH_DEBUG=ON ps1/build.sh`
+In PCSX-Redux it runs at about 8–12 frames a second. `CMAKE_ARGS=-DHH_DEBUG=ON ps1/build.sh`
 shows the frame rate and timings. `ps1/test/run.sh` plays the disc headless in PCSX-Redux
 with scripted button presses and saves screenshots.
+
+It runs on a real PlayStation, but it's barely playable. The whole game works,
+but the frame rate is low on the console causing the GunCon tracking to be very unreliable.
 
 ## Wii version
 
@@ -289,9 +291,10 @@ game plays in true 16:9, with a wider view, as on the PC.
 
 ### Playing on a real Wii
 
-It runs from the [Homebrew Channel](https://wiibrew.org/wiki/Homebrew_Channel) (a Wii U's
-Wii mode works too). If your Wii doesn't have it yet, <https://wii.hacks.guide> picks the
-right way to install it for your system version.
+It works on a real Wii. It runs from the
+[Homebrew Channel](https://wiibrew.org/wiki/Homebrew_Channel) (a Wii U's Wii mode works
+too). If your Wii doesn't have it yet, <https://wii.hacks.guide> picks the right way to
+install it for your system version.
 
 1. Run `wii/build.sh`.
 2. Copy the `wii/build/apps/` folder to the root of an SD or SDHC card formatted FAT32, so
