@@ -285,6 +285,9 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
     unsafe {
         libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
     }
+    #[cfg(target_arch = "aarch64")]
+    let entry = xr::Entry::linked(&()).map_err(|e| format!("could not start the OpenXR loader: {e}"))?;
+    #[cfg(not(target_arch = "aarch64"))]
     let entry = unsafe { xr::Entry::load(&()) }
         .map_err(|e| format!("could not load the OpenXR loader (libopenxr_loader.so.1): {e}"))?;
     let available = entry.enumerate_extensions().map_err(|e| format!("OpenXR extensions: {e}"))?;

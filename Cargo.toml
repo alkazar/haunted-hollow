@@ -16,6 +16,10 @@ raw-window-handle = "0.6"
 winit = "0.30"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
+# The Steam Frame's runtime has no OpenXR loader to dlopen, so arm64 builds link one in.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+openxr = { version = "0.22", features = ["static"] }
+
 [build-dependencies]
 naga = { version = "25", features = ["wgsl-in", "spv-out"] }
 

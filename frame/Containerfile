@@ -1,0 +1,16 @@
+# Cross-compiles for the Steam Frame. Its native games run in Steam Linux Runtime 3.0 "sniper"
+# (arm64), which is Debian 11, so building against Debian 11's glibc keeps the binary loadable there.
+FROM --platform=linux/amd64 docker.io/library/debian:bullseye
+# (The OpenXR loader's build insists on the Xlib headers, though the loader never uses libX11.)
+# Debian 11 has reached end of life, so its packages now live on archive.debian.org.
+RUN printf '%s\n' 'deb http://archive.debian.org/debian bullseye main' \
+        'deb http://archive.debian.org/debian-security bullseye-security main' > /etc/apt/sources.list \
+    && dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl cmake make g++-aarch64-linux-gnu libc6-dev-arm64-cross gcc libc6-dev \
+        libx11-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target aarch64-unknown-linux-gnu
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++

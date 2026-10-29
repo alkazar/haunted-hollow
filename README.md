@@ -178,6 +178,32 @@ run `./target/release/haunted_hollow --vr`. It needs the OpenXR loader
 
 The game holds still while the runtime's own menu has your attention. Ctrl+C quits.
 
+### Standalone on the Steam Frame
+
+The Frame runs native arm64 Linux games in an arm64 Steam Linux Runtime (3.0 sniper is
+Debian 11, 4.0 is newer).
+`frame/build.sh` cross-compiles one in a Debian 11 container (podman, or `CONTAINER=docker`)
+and puts it in `target/frame/haunted-hollow/`. The arm64 build has the OpenXR loader linked
+in, so nothing else needs to be installed on the headset.
+
+To install it, put the Frame in Developer Mode (Settings → System), open Settings →
+Developer → Pair new host, and run:
+
+```
+frame/upload.sh --run        # or: frame/upload.sh <hostname or IP> --run
+```
+
+It builds, pairs on first use (confirm on the headset), uploads with rsync over ssh, adds
+the game to the headset's library as "Devkit Game: HauntedHollow" and, with `--run`,
+starts it. It does what the SteamOS Devkit Client's Title Upload does, with the same key
+(`~/.config/steamos-devkit/devkit_rsa`) and Valve's helper scripts. `--no-build` uploads
+the last build, and `FRAME_RUNTIME=SteamLinuxRuntime_sniper-arm64` (for example) picks a
+different runtime than the default `SteamLinuxRuntime_4-arm64`.
+
+The official client works too: Title Upload with **Local Folder**
+`target/frame/haunted-hollow`, **Start Command** `haunted-hollow.sh` (which adds `--vr`)
+and an ARM64 Steam Linux Runtime.
+
 ## Code tour
 
 | File | What |
@@ -195,6 +221,7 @@ The game holds still while the runtime's own menu has your attention. Ctrl+C qui
 | `src/wiimote.rs` | Wii Remotes over Bluetooth L2CAP: BlueZ discovery, IR camera setup, buttons, IR pointer, rumble, LEDs |
 | `src/highscores.rs` | The top-ten table and its save file |
 | `src/main.rs` | Window, input, game loop, command-line flags |
+| `frame/` | Steam Frame: cross-compiling container, start script, headless devkit upload |
 
 Tuning knobs: spawn pools and density in `Game::build_schedule`, points/hit sizes in `Kind`,
 boss health in `update` (`40 + 22 × players`), track shape and section speeds in `track.rs`.
