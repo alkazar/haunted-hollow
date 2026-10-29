@@ -4,8 +4,8 @@
 //!   admire the scenery, but targets still appear in front of the (forward-facing) camera.
 //! - The HUD (crosshair, scores, banners) is drawn on a virtual screen that exactly fills the
 //!   game camera's view, `HUD_DIST` ahead, so seen from the cart it lines up with the world.
-//! - The controller is a laser pointer. Its beam ends on a sphere `HUD_DIST` around the rider,
-//!   where the crosshair floats, facing them; the screen point behind it is the game's aim.
+//! - The controller aims a crosshair that floats on a sphere `HUD_DIST` around the rider,
+//!   always facing them; the screen point the camera sees it at is the game's aim.
 
 use crate::game::{Game, SourceId, SourceInput, FOV_Y, PLAYER_COLORS};
 use crate::{atlas, audio, hud, mesh, step_game, vk as gfx};
@@ -16,6 +16,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
+/// How much smaller VR draws the HUD's menus, banners and scores than the virtual screen,
+/// which fills the camera's 70x107 degree view: at 0.5 they take about 39x68 degrees, so
+/// they can be read without turning your head.
+const MENU_ZOOM: f32 = 0.5;
 /// The game's screen size in VR. Nothing is shown at this resolution: it is just the
 /// coordinate system of the HUD and of aiming (16:9 like a TV, so targets are placed the same).
 const SCREEN: Vec2 = Vec2::new(1280.0, 720.0);
@@ -95,6 +99,7 @@ impl Cart {
     }
 
     /// The point on the aiming sphere the camera sees at a HUD pixel.
+    #[cfg(test)]
     fn sphere_point(&self, px: Vec2) -> Vec3 {
         let ndc = Vec2::new(px.x / SCREEN.x * 2.0 - 1.0, 1.0 - px.y / SCREEN.y * 2.0) * self.half_tan();
         self.eye + (self.dir + self.right * ndc.x + self.up * ndc.y).normalize() * HUD_DIST
@@ -106,11 +111,10 @@ impl Cart {
         (self.pixel(hit), hit)
     }
 
-    /// Moves HUD vertices drawn around pixel `at` onto the aiming sphere, as a flat card
-    /// facing the rider at the point the camera sees `at`, the same size as on the screen.
-    /// The result is still in HUD coordinates (now with depth), so it draws with the HUD.
-    fn onto_sphere(&self, verts: &mut [gfx::Vertex], at: Vec2) {
-        let centre = self.sphere_point(at);
+    /// Moves HUD vertices drawn around pixel `at` to world point `centre`, as a flat card
+    /// facing the rider, the same size as on the screen at the sphere's distance. The result
+    /// is still in HUD coordinates (now with depth), so it draws with the HUD.
+    fn onto_sphere(&self, verts: &mut [gfx::Vertex], at: Vec2, centre: Vec3) {
         let fwd = (centre - self.eye).normalize();
         let right = fwd.cross(self.up).normalize();
         let up = right.cross(fwd);
@@ -206,7 +210,7 @@ impl Actions {
         let hands = [inst.string_to_path("/user/hand/left")?, inst.string_to_path("/user/hand/right")?];
         let a = Actions {
             aim: set.create_action("aim", "Aim", &hands)?,
-            fire: set.create_action("fire", "Shoot / join", &hands)?,
+            fire: set.create_action("fire", "Shoot", &hands)?,
             start: set.create_action("start", "Start", &hands)?,
             pause: set.create_action("pause", "Pause", &hands)?,
             quit: set.create_action("back_to_title", "Back to the title screen (while paused)", &hands)?,
@@ -315,6 +319,8 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
     unsafe {
         libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
     }
+    game.vr = true;
+    game.menu_zoom = MENU_ZOOM;
     #[cfg(target_arch = "aarch64")]
     let entry = xr::Entry::linked(&()).map_err(|e| format!("could not start the OpenXR loader: {e}"))?;
     #[cfg(not(target_arch = "aarch64"))]
@@ -422,7 +428,7 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
         .create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)
         .map_err(|e| e.to_string())?;
 
-    eprintln!("VR: pull the trigger to join; A/X starts, B/Y goes back (while paused), menu pauses. Ctrl+C quits.");
+    eprintln!("VR: shoot START or press A/X to ride; B/Y goes back (while paused), menu pauses. Ctrl+C quits.");
     let mut events = xr::EventDataBuffer::new();
     let mut running = false;
     let mut focused = false;
@@ -506,7 +512,10 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
             });
             let input = SourceInput {
                 id: SourceId::Vr,
-                aim: pointer.and_then(|(o, d)| cart.aim(o, d).0),
+                aim: pointer.and_then(|(o, d)| cart.aim(o, d).0).map(|a| {
+                    // Menus are drawn zoomed in toward the middle, so aim at them likewise.
+                    if game.aims_at_menus() { SCREEN * 0.5 + (a - SCREEN * 0.5) / MENU_ZOOM } else { a }
+                }),
                 fire: fire[hand].0,
                 fire_pressed: fire[hand].1,
                 join: fire[hand].1,
@@ -547,11 +556,14 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
             game.draw_mist(&mut mist_buf);
             let mut ui = hud::Ui::new(SCREEN.x, SCREEN.y);
             game.draw_hud(&mut ui, false);
-            for i in 0..game.players.len() {
+            // The crosshair is always where the controller points, all the way round.
+            if let (Some(l), Some(i)) = (located(hand), game.vr_player()) {
+                let (pos, rot) = cart.to_world(&l.pose);
+                let hit = cart.sphere_hit(pos, rot * Vec3::NEG_Z);
                 let start = ui.v.len();
-                if let Some(at) = game.draw_crosshair(i, &mut ui) {
-                    cart.onto_sphere(&mut ui.v[start..], at);
-                }
+                ui.zoom = 1.0;
+                game.draw_crosshair_at(i, &mut ui, SCREEN * 0.5);
+                cart.onto_sphere(&mut ui.v[start..], SCREEN * 0.5, hit);
             }
 
             let (_, views) = session.locate_views(VIEW_TYPE, time, &local).map_err(|e| e.to_string())?;
@@ -603,15 +615,14 @@ pub fn run(mut game: Game, static_mesh: &[gfx::Vertex], audio: &audio::Audio, ti
     result
 }
 
-/// The controller as a little wand, with a beam in the rider's colour to show where it points.
+/// The controller as a little wand, with a beam in the rider's colour out to the crosshair.
 fn draw_pointer(out: &mut Vec<gfx::Vertex>, cart: &Cart, pos: Vec3, rot: Quat) {
     let fwd = rot * Vec3::NEG_Z;
     let wand = Mat4::from_scale_rotation_translation(Vec3::new(0.035, 0.035, 0.14), rot, pos + fwd * 0.03);
     mesh::push_box(out, &wand, atlas::T_DARKPLANK, [1.0, 1.0, 1.0], Vec3::splat(0.6), 0.6);
     let end = cart.sphere_hit(pos, fwd);
-    let len = pos.distance(end);
     let beam = Mat4::from_scale_rotation_translation(
-        Vec3::new(0.01, 0.01, len),
+        Vec3::new(0.01, 0.01, pos.distance(end)),
         Quat::from_rotation_arc(Vec3::NEG_Z, fwd),
         (pos + end) * 0.5,
     );
@@ -665,7 +676,7 @@ mod tests {
         // The crosshair card lands centred on that point, facing the rider.
         let mut v = [gfx::Vertex { pos: [aim.x, aim.y, 0.0], uv: [0.0; 2], color: [1.0; 4] }; 2];
         v[1].pos[0] += 10.0;
-        cart.onto_sphere(&mut v, aim);
+        cart.onto_sphere(&mut v, aim, cart.sphere_point(aim));
         let world = |v: &gfx::Vertex| cart.hud_to_world().transform_point3(Vec3::from_array(v.pos));
         assert!(world(&v[0]).distance(hit) < 1e-3);
         assert!((world(&v[1]) - world(&v[0])).dot(hit - cart.eye).abs() < 1e-3);

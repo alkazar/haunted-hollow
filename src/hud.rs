@@ -9,6 +9,9 @@ pub struct Ui {
     pub h: f32,
     /// One "pixel" of the pixel font at scale 1, in screen pixels.
     pub unit: f32,
+    /// Shrinks what is drawn toward the middle of the screen (1 = as laid out). VR uses it
+    /// so menus fit in the headset's view without turning your head.
+    pub zoom: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -20,10 +23,22 @@ pub enum Align {
 
 impl Ui {
     pub fn new(w: f32, h: f32) -> Ui {
-        Ui { v: Vec::with_capacity(8192), w, h, unit: (h / 240.0).max(1.0) }
+        Ui { v: Vec::with_capacity(8192), w, h, unit: (h / 240.0).max(1.0), zoom: 1.0 }
+    }
+
+    /// Where to lay something out so that, zoomed, it lands on screen point (x, y).
+    pub fn unzoom(&self, x: f32, y: f32) -> (f32, f32) {
+        let (cx, cy) = (self.w * 0.5, self.h * 0.5);
+        (cx + (x - cx) / self.zoom, cy + (y - cy) / self.zoom)
     }
 
     pub fn quad_uv(&mut self, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], c: [f32; 4]) {
+        let (x, y, w, h) = if self.zoom == 1.0 {
+            (x, y, w, h)
+        } else {
+            let (cx, cy) = (self.w * 0.5, self.h * 0.5);
+            (cx + (x - cx) * self.zoom, cy + (y - cy) * self.zoom, w * self.zoom, h * self.zoom)
+        };
         let p = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
         let t = [[uv[0], uv[1]], [uv[2], uv[1]], [uv[2], uv[3]], [uv[0], uv[3]]];
         for i in 0..4 {

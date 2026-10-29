@@ -13,7 +13,7 @@ USAGE: haunted_hollow [OPTIONS]
   --timescale X        Run the simulation X times faster
   --mute               No music or sound effects
   --vr                 VR mode for one rider in a headset (OpenXR, e.g. SteamVR or Monado).
-                       Trigger = shoot / join, A/X = start, menu = pause,
+                       Trigger = shoot (START on the title screen), A/X = start, menu = pause,
                        B/Y (while paused) = back to the title screen, Ctrl+C quits.
   --dump-audio DIR     Write all music and sound effects as WAV files and exit
                        (sound uses ALSA; set HAUNTED_ALSA_DEVICE to pick a device)

@@ -162,16 +162,20 @@ controllers. Start an OpenXR runtime first (SteamVR, or Monado with `monado-serv
 run `./target/release/haunted_hollow --vr`. It needs the OpenXR loader
 (`libopenxr_loader.so.1`, Fedora package `openxr-libs`, Debian/Ubuntu `libopenxr-loader1`).
 
-* The game runs exactly as on a TV. The cart's camera always faces forward and targets
+* The ride runs as on a TV. The cart's camera always faces forward and targets
   appear in front of it as usual. You can look around and lean to admire the scenery.
-* The HUD (crosshair, scores, banners) floats on a virtual screen 9 m ahead that fills the
-  camera's view, so it lines up with the world behind it.
-* The controller is a laser pointer. Where its beam meets the virtual screen is your aim,
-  and whichever hand last pulled its trigger does the aiming.
+* You are always player 1, with nothing to join. The title screen has a START button:
+  shoot it (or press A) and the ride starts, without the target-practice lesson. Only your
+  own score is shown.
+* The HUD floats on a virtual screen 9 m ahead. Score popups sit where the targets were
+  hit; menus, banners and scores are drawn at half size in the middle (about 68x39 degrees)
+  so you can read them without turning your head.
+* The controller is a wand with a laser beam. The crosshair floats where the beam ends, on
+  a sphere 9 m around you, facing you. Whichever hand last pulled its trigger does the aiming.
 
 | Touch-style controllers (also Steam Frame) | Index | Action |
 |---|---|---|
-| Trigger | Trigger | Shoot / join |
+| Trigger | Trigger | Shoot |
 | A / X | A | Start |
 | Left menu | B | Pause |
 | B / Y (while paused) | Thumbstick click (while paused) | Back to the title screen |

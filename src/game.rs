@@ -326,6 +326,11 @@ pub struct Game {
     pub paused: bool,
     pub debug: bool,
     pub show_debug: bool,
+    /// VR mode: one rider, always joined, who shoots START on the title screen and goes
+    /// straight into the ride (no lesson), and only sees their own score.
+    pub vr: bool,
+    /// `Ui::zoom` for the HUD's menus, banners and scores (not for what marks the world).
+    pub menu_zoom: f32,
     title_join_t: Option<f32>,
     /// When (in `state_t`) each player popped their practice target.
     practice: [Option<f32>; 4],
@@ -402,6 +407,8 @@ impl Game {
             paused: false,
             debug,
             show_debug: debug,
+            vr: false,
+            menu_zoom: 1.0,
             title_join_t: None,
             practice: [None; 4],
             rumble_requests: vec![],
@@ -557,6 +564,12 @@ impl Game {
         }
     }
 
+    /// The START button on the VR title screen (x, y, w, h).
+    fn start_button(&self) -> (f32, f32, f32, f32) {
+        let (w, h) = (self.screen.x * 0.3, self.screen.y * 0.16);
+        (self.screen.x * 0.5 - w * 0.5, self.screen.y * 0.6, w, h)
+    }
+
     /// Screen rectangles (x, y, w, h) of the letter grid's keys, in `KEYS` order.
     fn key_rects(&self) -> Vec<(f32, f32, f32, f32)> {
         let (w, h) = (self.screen.x, self.screen.y);
@@ -573,7 +586,7 @@ impl Game {
     }
 
     fn key_at(&self, p: Vec2) -> Option<usize> {
-        self.key_rects().iter().position(|&(x, y, w, h)| p.x >= x && p.x < x + w && p.y >= y && p.y < y + h)
+        self.key_rects().iter().position(|&r| in_rect(p, r))
     }
 
     /// A rider shot at the letter grid: add a letter, delete one, or finish.
@@ -1271,6 +1284,16 @@ impl Game {
         self.update_bots(dt);
 
         match self.state {
+            State::Title if self.vr => {
+                let button = self.start_button();
+                let shot = inputs.iter().any(|i| i.id == SourceId::Vr && i.fire_pressed && i.aim.map_or(false, |a| in_rect(a, button)));
+                if shot || inputs.iter().any(|i| i.start) {
+                    if shot {
+                        self.sfx(Sfx::Join, 0.6, 0.0, 1.0);
+                    }
+                    self.start_ride();
+                }
+            }
             State::Title => {
                 let start = inputs.iter().any(|i| i.start);
                 if self.joined_count() > 0 && self.title_join_t.is_none() {
@@ -1506,7 +1529,9 @@ impl Game {
                     }
                 }
                 None => {
-                    if matches!(inp.id, SourceId::Wii(_) | SourceId::Vr) && (inp.join || inp.fire_pressed) {
+                    // The VR rider needs no joining: they are in as soon as the controller is.
+                    let vr_rider = self.vr && inp.id == SourceId::Vr;
+                    if vr_rider || (matches!(inp.id, SourceId::Wii(_) | SourceId::Vr) && (inp.join || inp.fire_pressed)) {
                         if let Some(free) = self.players.iter().position(|p| !p.joined && p.source.is_none())
                             .or_else(|| self.players.iter().position(|p| !p.joined))
                         {
@@ -1515,8 +1540,10 @@ impl Game {
                             p.source = Some(inp.id);
                             p.reset_score();
                             self.led_requests.push((inp.id, Some(free)));
-                            self.rumble_requests.push((inp.id, 200));
-                            self.sfx(Sfx::Join, 0.6, 0.0, 1.0 + free as f32 * 0.1);
+                            if !vr_rider {
+                                self.rumble_requests.push((inp.id, 200));
+                                self.sfx(Sfx::Join, 0.6, 0.0, 1.0 + free as f32 * 0.1);
+                            }
                         }
                     }
                 }
@@ -2340,15 +2367,31 @@ impl Game {
         if self.state == State::Initials && !self.initials[i].as_ref().map_or(false, |e| e.done_at.is_none()) {
             return None;
         }
+        self.draw_crosshair_at(i, ui, p.aim);
+        Some(p.aim)
+    }
+
+    /// Player `i`'s crosshair centred on `at`, whether or not it is showing.
+    pub fn draw_crosshair_at(&self, i: usize, ui: &mut Ui, at: Vec2) {
+        let p = &self.players[i];
         let unit = ui.unit;
         let c = PLAYER_COLORS[i];
         let alpha = if p.joined { 1.0 } else { 0.45 };
         let size = 16.0 * unit * (1.0 + p.kick * 0.35);
-        ui.sprite(T_RING, p.aim.x, p.aim.y, size + unit * 2.0, [0.0, 0.0, 0.0, 0.7 * alpha]);
-        ui.sprite(T_RING, p.aim.x, p.aim.y, size, [c[0], c[1], c[2], alpha]);
-        ui.rect(p.aim.x - unit, p.aim.y - unit, unit * 2.0, unit * 2.0, [1.0, 1.0, 1.0, alpha]);
-        ui.text(&format!("P{}", i + 1), p.aim.x + size * 0.45, p.aim.y + size * 0.3, 0.9, [c[0], c[1], c[2], alpha], Align::Left);
-        Some(p.aim)
+        ui.sprite(T_RING, at.x, at.y, size + unit * 2.0, [0.0, 0.0, 0.0, 0.7 * alpha]);
+        ui.sprite(T_RING, at.x, at.y, size, [c[0], c[1], c[2], alpha]);
+        ui.rect(at.x - unit, at.y - unit, unit * 2.0, unit * 2.0, [1.0, 1.0, 1.0, alpha]);
+        ui.text(&format!("P{}", i + 1), at.x + size * 0.45, at.y + size * 0.3, 0.9, [c[0], c[1], c[2], alpha], Align::Left);
+    }
+
+    /// Whether aiming is at the HUD's menus (buttons, letters) rather than at the world.
+    pub fn aims_at_menus(&self) -> bool {
+        matches!(self.state, State::Title | State::Tutorial | State::Results | State::Initials | State::HighScores)
+    }
+
+    /// The player slot the VR rider is in, if any.
+    pub fn vr_player(&self) -> Option<usize> {
+        self.players.iter().position(|p| p.source == Some(SourceId::Vr))
     }
 
     pub fn draw_ui(&self, ui: &mut Ui) {
@@ -2370,6 +2413,8 @@ impl Game {
                 ui.text(&p.text, sp.x, sp.y, sc, [p.color[0], p.color[1], p.color[2], a], Align::Center);
             }
         }
+        // Everything else is menus, banners and scores, which may be zoomed in toward the middle.
+        ui.zoom = self.menu_zoom;
 
         match self.state {
             State::Title => self.draw_title(ui),
@@ -2392,7 +2437,12 @@ impl Game {
             let bt = self.banner.1;
             if bt >= 0.0 && bt < 3.0 {
                 let a = smooth(bt / 0.3) * (1.0 - smooth((bt - 2.4) / 0.6));
-                let by = if self.boss.is_some() { h * 0.68 } else { h * 0.16 };
+                // In VR the zoom would pull it down into the scenery: keep it up high instead.
+                let by = match (self.boss.is_some(), self.vr) {
+                    (true, _) => h * 0.68,
+                    (false, false) => h * 0.16,
+                    (false, true) => ui.unzoom(0.0, h * 0.2).1,
+                };
                 ui.text_fit(&self.banner.0, w * 0.5, by, 2.6, w * 0.9, [1.0, 0.75, 0.3, a], Align::Center);
             }
             // Boss bar and taunts.
@@ -2400,8 +2450,9 @@ impl Game {
                 if !b.defeated && self.state == State::Boss {
                     let bw = w * 0.5;
                     let x = w * 0.25;
-                    // Name on top, bar underneath with a clear gap.
-                    let name_y = 4.0 * unit;
+                    // Name on top, bar underneath with a clear gap. In VR the zoom would pull
+                    // them down over the Pumpkin King, so they stay up near the top of the view.
+                    let name_y = if self.vr { ui.unzoom(0.0, h * 0.08).1 } else { 4.0 * unit };
                     let y = name_y + 8.0 * 1.4 * unit + 3.0 * unit;
                     ui.text("THE PUMPKIN KING", w * 0.5, name_y, 1.4, orange, Align::Center);
                     ui.panel(x, y, bw, 7.0 * unit, [0.1, 0.03, 0.12, 0.85], [0.0, 0.0, 0.0, 0.9]);
@@ -2409,8 +2460,10 @@ impl Game {
                     ui.rect(x + unit * 1.5, y + unit * 1.5, (bw - unit * 3.0) * f, 4.0 * unit, [1.0, 0.45 + 0.3 * f, 0.05, 1.0]);
                     if b.taunt > 3.5 && b.t > 3.0 {
                         if let Some((sp, _)) = self.project(b.pos + Vec3::Y * 5.5) {
-                            let ty = sp.y.max(y + 13.0 * unit);
-                            ui.text_fit(b.taunt_text, sp.x.clamp(w * 0.3, w * 0.7), ty, 1.6, w * 0.6, [1.0, 0.9, 0.4, 1.0], Align::Center);
+                            // Over his head, even with the HUD zoomed (but kept below the bar).
+                            let (sx, sy) = ui.unzoom(sp.x, sp.y);
+                            let ty = sy.max(y + 13.0 * unit);
+                            ui.text_fit(b.taunt_text, sx.clamp(w * 0.3, w * 0.7), ty, 1.6, w * 0.6, [1.0, 0.9, 0.4, 1.0], Align::Center);
                         }
                     }
                 }
@@ -2418,10 +2471,12 @@ impl Game {
             self.draw_scores(ui);
         }
 
-        // Fade to black at the end of the ride.
+        // Fade to black at the end of the ride, over the whole view.
         if self.state == State::Outro {
             let a = smooth((self.state_t - (OUTRO_TIME - 1.6)) / 1.4);
+            ui.zoom = 1.0;
             ui.rect(0.0, 0.0, w, h, [0.0, 0.0, 0.0, a]);
+            ui.zoom = self.menu_zoom;
         }
 
         // Crosshairs on top of everything.
@@ -2432,10 +2487,18 @@ impl Game {
         }
 
         if self.paused {
+            ui.zoom = 1.0;
             ui.rect(0.0, 0.0, w, h, [0.0, 0.0, 0.0, 0.55]);
+            ui.zoom = self.menu_zoom;
             ui.text("PAUSED", w * 0.5, h * 0.4, 4.0, orange, Align::Center);
-            ui.text("PRESS HOME TO KEEP RIDING", w * 0.5, h * 0.4 + 40.0 * unit, 1.3, white, Align::Center);
-            ui.text("PRESS - TO GO BACK TO THE START", w * 0.5, h * 0.4 + 52.0 * unit, 1.0, [0.8, 0.8, 0.8, 1.0], Align::Center);
+            // VR names the Touch-style buttons (the Steam Frame's), the TV the Wii Remote's.
+            let (keep, back) = if self.vr {
+                ("PRESS MENU TO KEEP RIDING", "PRESS B OR Y TO GO BACK TO THE START")
+            } else {
+                ("PRESS HOME TO KEEP RIDING", "PRESS - TO GO BACK TO THE START")
+            };
+            ui.text(keep, w * 0.5, h * 0.4 + 40.0 * unit, 1.3, white, Align::Center);
+            ui.text(back, w * 0.5, h * 0.4 + 52.0 * unit, 1.0, [0.8, 0.8, 0.8, 1.0], Align::Center);
         }
 
         if self.show_debug {
@@ -2476,7 +2539,7 @@ impl Game {
                 let sw = inner - lw - unit * 4.0;
                 let sc = (1.6f32).min(sw / ui.text_width(&score, 1.0)).min(ph / (8.0 * unit) * 0.75);
                 ui.text(&score, x + bw - unit * 4.0, y + ph * 0.5 - 4.0 * sc * unit, sc, [1.0, 1.0, 1.0, 1.0], Align::Right);
-            } else {
+            } else if !self.vr {
                 ui.panel(x, y, bw, ph, [0.0, 0.0, 0.0, 0.35], [c[0] * 0.5, c[1] * 0.5, c[2] * 0.5, 0.6]);
                 let txt = if self.debug { "KEY 1-4" } else { "PRESS A" };
                 ui.text_fit(txt, x + bw * 0.5, y + ph * 0.5 - 3.2 * unit, 0.8, inner, [c[0], c[1], c[2], 0.7], Align::Center);
@@ -2494,6 +2557,22 @@ impl Game {
         if let Some(best) = self.high.entries.first() {
             let line = format!("TOP SCORE  {}  {}", best.initials, best.score);
             ui.text_fit(&line, w * 0.5, h * 0.12 + 62.0 * unit, 1.1, w * 0.9, [1.0, 0.82, 0.2, 1.0], Align::Center);
+        }
+
+        if self.vr {
+            // One rider, already in: just the START button, lit while the crosshair is on it.
+            let (x, y, bw, bh) = self.start_button();
+            let hover = self.players.iter().any(|p| p.source == Some(SourceId::Vr) && p.aim_visible && in_rect(p.aim, (x, y, bw, bh)));
+            let c = PLAYER_COLORS[0];
+            let k = if hover { 0.55 } else { 0.25 };
+            ui.panel(x, y, bw, bh, [c[0] * k, c[1] * k, c[2] * k, 0.9], [c[0], c[1], c[2], 1.0]);
+            let pulse = 1.0 + 0.05 * (t * 4.0).sin();
+            ui.text_fit("START", x + bw * 0.5, y + bh * 0.5 - 12.0 * unit * pulse, 3.0 * pulse, bw * 0.85, [1.0, 1.0, 1.0, 1.0], Align::Center);
+            let msg = "SHOOT START, OR PRESS A, TO RIDE";
+            ui.text_fit(msg, w * 0.5, h * 0.84, 1.3, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
+            let version = env!("HAUNTED_VERSION");
+            ui.text(version, w - 3.0 * unit, h - 9.0 * unit, 0.7, [0.6, 0.6, 0.7, 0.6], Align::Right);
+            return;
         }
 
         // Four player cards in a row; every line is fitted to its card.
@@ -2873,6 +2952,10 @@ fn cloud_runs() -> Vec<(f32, f32, f32)> {
     runs
 }
 
+fn in_rect(p: Vec2, (x, y, w, h): (f32, f32, f32, f32)) -> bool {
+    p.x >= x && p.x < x + w && p.y >= y && p.y < y + h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2911,6 +2994,31 @@ mod tests {
         g.update_boss(0.016);
         let moved = g.boss.as_ref().unwrap().pos.distance(before);
         assert!(moved < 0.5, "boss jumped {moved:.2} m in one frame");
+    }
+
+    #[test]
+    fn the_vr_rider_shoots_start_and_skips_the_lesson() {
+        let track = Track::new();
+        let world = crate::world::generate(&track);
+        let mut g = Game::new(track, world, false, 0);
+        g.vr = true;
+        let screen = Vec2::new(1280.0, 720.0);
+        let vr = |at: Vec2, fire: bool| SourceInput { id: SourceId::Vr, aim: Some(at), fire, fire_pressed: fire, ..wii(0, false) };
+        // In as soon as the controller is, without pressing anything, and no auto-start.
+        for _ in 0..(20.0 / 0.1) as usize {
+            g.update(0.1, &[vr(Vec2::new(100.0, 100.0), false)], screen, None);
+        }
+        assert_eq!((g.joined_count(), g.vr_player(), g.state), (1, Some(0), State::Title));
+        // Shooting beside the button does nothing; shooting it starts the ride.
+        g.update(0.016, &[vr(Vec2::new(100.0, 100.0), true)], screen, None);
+        assert_eq!(g.state, State::Title);
+        let (x, y, w, h) = g.start_button();
+        g.update(0.016, &[vr(Vec2::new(x + w * 0.5, y + h * 0.5), true)], screen, None);
+        assert_eq!(g.state, State::Ride);
+        // Back on the title screen the rider is in again straight away.
+        g.go_to_title();
+        g.update(0.016, &[vr(Vec2::new(100.0, 100.0), false)], screen, None);
+        assert_eq!(g.vr_player(), Some(0));
     }
 
     #[test]
