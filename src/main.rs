@@ -13,6 +13,7 @@ mod track;
 mod vk;
 mod wiimote;
 mod world;
+mod xr;
 
 use game::{Game, SourceId, SourceInput, State};
 use glam::{Mat4, Vec2};
@@ -38,6 +39,7 @@ struct Args {
     boss: bool,
     mute: bool,
     dump_audio: Option<String>,
+    vr: bool,
 }
 
 fn parse_args() -> Args {
@@ -54,6 +56,7 @@ fn parse_args() -> Args {
         boss: false,
         mute: false,
         dump_audio: None,
+        vr: false,
     };
     let mut windowed = false;
     let mut full = false;
@@ -75,6 +78,7 @@ fn parse_args() -> Args {
             "--exit-after" => a.exit_after = val(&mut i).parse().ok(),
             "--boss" => a.boss = true,
             "--mute" => a.mute = true,
+            "--vr" => a.vr = true,
             "--dump-audio" => a.dump_audio = Some(val(&mut i)),
             "--size" => {
                 let v = val(&mut i);
@@ -227,31 +231,11 @@ impl App {
         let mouse_slot = if self.args.debug { Some(self.mouse_slot.unwrap_or(0)) } else { None };
         // Fixed-size sub steps keep the simulation stable at high time scales.
         let mut remaining = real_dt * scale;
-        let mut first = true;
         if self.args.shots.len() > self.shots_done || self.args.exit_after.is_some() {
             // Deterministic stepping for capture runs.
             remaining = scale / 60.0;
         }
-        while remaining > 1e-5 {
-            let step = remaining.min(1.0 / 60.0);
-            remaining -= step;
-            let inp: Vec<SourceInput> = if first {
-                inputs.clone()
-            } else {
-                inputs
-                    .iter()
-                    .map(|i| SourceInput { fire_pressed: false, join: false, start: false, pause: false, quit_to_title: false, ..i.clone() })
-                    .collect()
-            };
-            first = false;
-            self.game.update(step, &inp, screen, mouse_slot);
-            for e in self.game.sounds.drain(..) {
-                self.audio.play(e);
-            }
-            self.sim_time += step;
-        }
-        self.audio.music(self.game.music());
-        self.audio.cart(self.game.cart_noise());
+        self.sim_time += step_game(&mut self.game, &self.audio, &inputs, remaining, screen, mouse_slot);
         for (src, ms) in self.game.rumble_requests.drain(..) {
             if let SourceId::Wii(id) = src {
                 self.wii.rumble(id, ms);
@@ -311,6 +295,42 @@ impl App {
         }
         let _ = State::Title;
     }
+}
+
+/// Advances the game by `remaining` seconds in fixed-size sub steps (which keep the simulation
+/// stable at high time scales), plays the sounds it asks for and returns the time stepped.
+/// Button presses only count in the first sub step.
+fn step_game(
+    game: &mut Game,
+    audio: &audio::Audio,
+    inputs: &[SourceInput],
+    mut remaining: f32,
+    screen: Vec2,
+    mouse_slot: Option<usize>,
+) -> f32 {
+    let mut stepped = 0.0;
+    let mut first = true;
+    while remaining > 1e-5 {
+        let step = remaining.min(1.0 / 60.0);
+        remaining -= step;
+        let inp: Vec<SourceInput> = if first {
+            inputs.to_vec()
+        } else {
+            inputs
+                .iter()
+                .map(|i| SourceInput { fire_pressed: false, join: false, start: false, pause: false, quit_to_title: false, ..i.clone() })
+                .collect()
+        };
+        first = false;
+        game.update(step, &inp, screen, mouse_slot);
+        for e in game.sounds.drain(..) {
+            audio.play(e);
+        }
+        stepped += step;
+    }
+    audio.music(game.music());
+    audio.cart(game.cart_noise());
+    stepped
 }
 
 /// `$XDG_DATA_HOME/haunted-hollow/highscores.txt` (default `~/.local/share/...`).
@@ -462,9 +482,17 @@ fn main() {
         eprintln!("DEBUG MODE: mouse = player 1 (keys 1-4 pick player), left click shoots, Enter/right click starts,");
         eprintln!("            B = skip to boss, hold Tab = fast forward, P = pause, F3 = debug info, Esc = quit");
     }
+    let audio = if args.mute { audio::Audio::silent() } else { audio::Audio::start() };
+    if args.vr {
+        // Single player with the headset's controllers: no window and no Wii Remotes.
+        if let Err(e) = xr::run(game, &static_mesh, &audio, args.timescale) {
+            eprintln!("VR mode failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let wii = wiimote::WiimoteManager::start(args.ir.clone());
 
-    let audio = if args.mute { audio::Audio::silent() } else { audio::Audio::start() };
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {

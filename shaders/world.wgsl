@@ -3,7 +3,7 @@
 struct PC {
     viewproj: mat4x4<f32>,
     cam: vec4<f32>,     // xyz camera position, w = time
-    fog: vec4<f32>,     // rgb fog colour
+    fog: vec4<f32>,     // rgb fog colour, w = 2 for linear output (see to_target)
     params: vec4<f32>,  // x fog start, y fog end, z lantern strength, w lantern radius
 };
 var<push_constant> pc: PC;
@@ -23,6 +23,16 @@ struct VOut {
     @location(2) world: vec3<f32>,
 };
 
+// fog.w > 1.5 means the target is an sRGB image (the VR headset's swapchain), which encodes
+// what we write: so decode our sRGB-authored colour to linear first, and it comes out as-is.
+fn to_target(c: vec3<f32>) -> vec3<f32> {
+    if (pc.fog.w > 1.5) {
+        let x = max(c, vec3<f32>(0.0));
+        return select(pow((x + 0.055) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045));
+    }
+    return c;
+}
+
 @vertex
 fn vs_main(v: VIn) -> VOut {
     var o: VOut;
@@ -40,7 +50,7 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
         discard;
     }
     if (i.color.a > 1.5) {
-        return vec4<f32>(tex.rgb * i.color.rgb, 1.0);
+        return vec4<f32>(to_target(tex.rgb * i.color.rgb), 1.0);
     }
     let d = distance(i.world, pc.cam.xyz);
     let k = clamp(1.0 - d / pc.params.w, 0.0, 1.0);
@@ -48,7 +58,7 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
     var rgb = tex.rgb * (i.color.rgb + vec3<f32>(1.0, 0.78, 0.5) * lamp);
     let f = smoothstep(pc.params.x, pc.params.y, d);
     rgb = mix(rgb, pc.fog.rgb, f);
-    return vec4<f32>(rgb, 1.0);
+    return vec4<f32>(to_target(rgb), 1.0);
 }
 
 // Soft alpha-blended mist puffs. `uv` holds the quad's own 0..1 coordinates (not the
@@ -62,5 +72,5 @@ fn fs_mist(i: VOut) -> @location(0) vec4<f32> {
     let d = distance(i.world, pc.cam.xyz);
     a = a * smoothstep(1.0, 6.0, d) * i.color.a;
     let rgb = mix(i.color.rgb, pc.fog.rgb, smoothstep(pc.params.x, pc.params.y, d));
-    return vec4<f32>(rgb, a);
+    return vec4<f32>(to_target(rgb), a);
 }

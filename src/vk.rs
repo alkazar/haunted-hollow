@@ -47,13 +47,12 @@ struct Img {
 pub struct Renderer {
     _entry: Entry,
     instance: Instance,
-    surface_fn: surface::Instance,
-    surface: vk::SurfaceKHR,
+    /// Window surface and swapchain functions (None when drawing for OpenXR).
+    present: Option<(surface::Instance, vk::SurfaceKHR, swapchain::Device)>,
     pdev: vk::PhysicalDevice,
     mem_props: vk::PhysicalDeviceMemoryProperties,
     device: Device,
     queue: vk::Queue,
-    swap_fn: swapchain::Device,
     swapchain: vk::SwapchainKHR,
     format: vk::Format,
     pub extent: vk::Extent2D,
@@ -86,6 +85,31 @@ pub struct Renderer {
     capture_supported: bool,
     pub needs_resize: bool,
     pub device_name: String,
+    xr_targets: Vec<Target>,
+}
+
+/// A Vulkan instance and device made elsewhere (by the OpenXR runtime), handed to `new_xr`.
+pub struct Base {
+    pub entry: Entry,
+    pub instance: Instance,
+    pub pdev: vk::PhysicalDevice,
+    pub qfi: u32,
+    pub device: Device,
+}
+
+/// An OpenXR swapchain image wrapped as a render target, with its own depth buffer.
+struct Target {
+    view: vk::ImageView,
+    depth: Img,
+    framebuffer: vk::Framebuffer,
+    extent: vk::Extent2D,
+}
+
+/// One eye of a VR frame: which target to draw into, with what camera.
+pub struct Eye {
+    pub target: usize,
+    pub world: PushConstants,
+    pub ui: PushConstants,
 }
 
 pub struct Capture {
@@ -155,9 +179,6 @@ impl Renderer {
             }
         }
         let (_, pdev, qfi) = best.ok_or("No Vulkan GPU with graphics+present support found")?;
-        let props = instance.get_physical_device_properties(pdev);
-        let device_name = CStr::from_ptr(props.device_name.as_ptr()).to_string_lossy().into_owned();
-        let mem_props = instance.get_physical_device_memory_properties(pdev);
 
         let prio = [1.0f32];
         let qci = [vk::DeviceQueueCreateInfo::default().queue_family_index(qfi).queue_priorities(&prio)];
@@ -166,7 +187,6 @@ impl Renderer {
             .queue_create_infos(&qci)
             .enabled_extension_names(&dev_exts);
         let device = instance.create_device(pdev, &dci, None).map_err(|e| format!("create_device: {e}"))?;
-        let queue = device.get_device_queue(qfi, 0);
         let swap_fn = swapchain::Device::new(&instance, &device);
 
         // Surface format: prefer UNORM so our sRGB-authored colours pass straight through.
@@ -185,6 +205,50 @@ impl Renderer {
             .map_err(|e| e.to_string())?;
         let capture_supported = caps.supported_usage_flags.contains(vk::ImageUsageFlags::TRANSFER_SRC);
 
+        let mut r = Self::build(
+            Base { entry, instance, pdev, qfi, device },
+            Some((surface_fn, surface, swap_fn)),
+            format,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            capture_supported,
+            atlas_rgba,
+            atlas_size,
+        )?;
+        r.create_swapchain(width, height)?;
+        Ok(r)
+    }
+
+    /// A renderer for OpenXR: `base` was created through the runtime, and frames are drawn
+    /// into swapchain images added with `add_xr_target` (in `format`) instead of a window.
+    pub fn new_xr(base: Base, format: vk::Format, atlas_rgba: &[u8], atlas_size: u32) -> Result<Self, String> {
+        unsafe {
+            Self::build(
+                base,
+                None,
+                format,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                false,
+                atlas_rgba,
+                atlas_size,
+            )
+        }
+    }
+
+    unsafe fn build(
+        base: Base,
+        present: Option<(surface::Instance, vk::SurfaceKHR, swapchain::Device)>,
+        format: vk::Format,
+        final_layout: vk::ImageLayout,
+        capture_supported: bool,
+        atlas_rgba: &[u8],
+        atlas_size: u32,
+    ) -> Result<Self, String> {
+        let Base { entry, instance, pdev, qfi, device } = base;
+        let props = instance.get_physical_device_properties(pdev);
+        let device_name = CStr::from_ptr(props.device_name.as_ptr()).to_string_lossy().into_owned();
+        let mem_props = instance.get_physical_device_memory_properties(pdev);
+        let queue = device.get_device_queue(qfi, 0);
+
         // Render pass: colour + depth.
         let attachments = [
             vk::AttachmentDescription::default()
@@ -193,7 +257,7 @@ impl Renderer {
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+                .final_layout(final_layout),
             vk::AttachmentDescription::default()
                 .format(vk::Format::D32_SFLOAT)
                 .samples(vk::SampleCountFlags::TYPE_1)
@@ -286,16 +350,14 @@ impl Renderer {
         let mut r = Renderer {
             _entry: entry,
             instance,
-            surface_fn,
-            surface,
+            present,
             pdev,
             mem_props,
             device,
             queue,
-            swap_fn,
             swapchain: vk::SwapchainKHR::null(),
             format,
-            extent: vk::Extent2D { width, height },
+            extent: vk::Extent2D { width: 0, height: 0 },
             images: vec![],
             views: vec![],
             framebuffers: vec![],
@@ -325,8 +387,8 @@ impl Renderer {
             capture_supported,
             needs_resize: false,
             device_name,
+            xr_targets: vec![],
         };
-        r.create_swapchain(width, height)?;
         r.upload_atlas(atlas_rgba, atlas_size)?;
 
         // Descriptor set.
@@ -387,6 +449,10 @@ impl Renderer {
         }
         r.ensure_index_buffer(MAX_DYN_QUADS.max(MAX_UI_QUADS))?;
         Ok(r)
+    }
+
+    pub fn wait_idle(&self) {
+        unsafe { self.device.device_wait_idle().ok() };
     }
 
     fn find_mem(&self, bits: u32, flags: vk::MemoryPropertyFlags) -> Option<u32> {
@@ -637,10 +703,12 @@ impl Renderer {
     }
 
     fn create_swapchain(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let Some((surface_fn, surface, swap_fn)) = self.present.clone() else {
+            return Ok(());
+        };
         unsafe {
-            let caps = self
-                .surface_fn
-                .get_physical_device_surface_capabilities(self.pdev, self.surface)
+            let caps = surface_fn
+                .get_physical_device_surface_capabilities(self.pdev, surface)
                 .map_err(|e| e.to_string())?;
             let extent = if caps.current_extent.width != u32::MAX {
                 caps.current_extent
@@ -673,7 +741,7 @@ impl Renderer {
             }
             let old = self.swapchain;
             let sci = vk::SwapchainCreateInfoKHR::default()
-                .surface(self.surface)
+                .surface(surface)
                 .min_image_count(count)
                 .image_format(self.format)
                 .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
@@ -686,12 +754,12 @@ impl Renderer {
                 .present_mode(vk::PresentModeKHR::FIFO)
                 .clipped(true)
                 .old_swapchain(old);
-            self.swapchain = self.swap_fn.create_swapchain(&sci, None).map_err(|e| format!("swapchain: {e}"))?;
+            self.swapchain = swap_fn.create_swapchain(&sci, None).map_err(|e| format!("swapchain: {e}"))?;
             if old != vk::SwapchainKHR::null() {
-                self.swap_fn.destroy_swapchain(old, None);
+                swap_fn.destroy_swapchain(old, None);
             }
             self.extent = extent;
-            self.images = self.swap_fn.get_swapchain_images(self.swapchain).map_err(|e| e.to_string())?;
+            self.images = swap_fn.get_swapchain_images(self.swapchain).map_err(|e| e.to_string())?;
             let range = vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -716,7 +784,42 @@ impl Renderer {
                 })
                 .collect();
 
-            // Depth buffer.
+            let depth = self.create_depth(extent)?;
+            let dview = depth.view;
+            self.depth = Some(depth);
+
+            self.framebuffers = self
+                .views
+                .iter()
+                .map(|&v| {
+                    let att = [v, dview];
+                    self.device
+                        .create_framebuffer(
+                            &vk::FramebufferCreateInfo::default()
+                                .render_pass(self.render_pass)
+                                .attachments(&att)
+                                .width(extent.width)
+                                .height(extent.height)
+                                .layers(1),
+                            None,
+                        )
+                        .unwrap()
+                })
+                .collect();
+            // One "render finished" semaphore per swapchain image.
+            for s in self.render_done.drain(..) {
+                self.device.destroy_semaphore(s, None);
+            }
+            for _ in 0..self.images.len() {
+                self.render_done
+                    .push(self.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap());
+            }
+            Ok(())
+        }
+    }
+
+    fn create_depth(&self, extent: vk::Extent2D) -> Result<Img, String> {
+        unsafe {
             let dimg = self
                 .device
                 .create_image(
@@ -758,35 +861,55 @@ impl Renderer {
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-            self.depth = Some(Img { image: dimg, mem: dmem, view: dview });
+            Ok(Img { image: dimg, mem: dmem, view: dview })
+        }
+    }
 
-            self.framebuffers = self
-                .views
-                .iter()
-                .map(|&v| {
-                    let att = [v, dview];
-                    self.device
-                        .create_framebuffer(
-                            &vk::FramebufferCreateInfo::default()
-                                .render_pass(self.render_pass)
-                                .attachments(&att)
-                                .width(extent.width)
-                                .height(extent.height)
-                                .layers(1),
-                            None,
-                        )
-                        .unwrap()
-                })
-                .collect();
-            // One "render finished" semaphore per swapchain image.
-            for s in self.render_done.drain(..) {
-                self.device.destroy_semaphore(s, None);
-            }
-            for _ in 0..self.images.len() {
-                self.render_done
-                    .push(self.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap());
-            }
-            Ok(())
+    fn destroy_img(&self, img: Img) {
+        unsafe {
+            self.device.destroy_image_view(img.view, None);
+            self.device.destroy_image(img.image, None);
+            self.device.free_memory(img.mem, None);
+        }
+    }
+
+    /// Wraps one OpenXR swapchain image (in the renderer's colour format) as a render target
+    /// and returns its index for `Eye::target`.
+    pub fn add_xr_target(&mut self, image: vk::Image, extent: vk::Extent2D) -> Result<usize, String> {
+        unsafe {
+            let view = self
+                .device
+                .create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(self.format)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        }),
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            let depth = self.create_depth(extent)?;
+            let att = [view, depth.view];
+            let framebuffer = self
+                .device
+                .create_framebuffer(
+                    &vk::FramebufferCreateInfo::default()
+                        .render_pass(self.render_pass)
+                        .attachments(&att)
+                        .width(extent.width)
+                        .height(extent.height)
+                        .layers(1),
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            self.xr_targets.push(Target { view, depth, framebuffer, extent });
+            Ok(self.xr_targets.len() - 1)
         }
     }
 
@@ -799,9 +922,7 @@ impl Renderer {
                 self.device.destroy_image_view(v, None);
             }
             if let Some(d) = self.depth.take() {
-                self.device.destroy_image_view(d.view, None);
-                self.device.destroy_image(d.image, None);
-                self.device.free_memory(d.mem, None);
+                self.destroy_img(d);
             }
         }
     }
@@ -833,10 +954,13 @@ impl Renderer {
         if self.extent.width == 0 || self.extent.height == 0 || self.framebuffers.is_empty() {
             return None;
         }
+        let Some((_, _, swap_fn)) = self.present.clone() else {
+            return None;
+        };
         unsafe {
             let f = self.frame;
             self.device.wait_for_fences(&[self.fences[f]], true, u64::MAX).ok();
-            let (img_index, _) = match self.swap_fn.acquire_next_image(
+            let (img_index, _) = match swap_fn.acquire_next_image(
                 self.swapchain,
                 u64::MAX,
                 self.img_avail[f],
@@ -854,82 +978,11 @@ impl Renderer {
             };
             self.device.reset_fences(&[self.fences[f]]).ok();
 
-            // Upload dynamic geometry.
-            let dyn_quads = (dyn_verts.len() / 4).min(MAX_DYN_QUADS);
-            std::ptr::copy_nonoverlapping(dyn_verts.as_ptr(), self.dyn_vb[f].ptr as *mut Vertex, dyn_quads * 4);
-            // Mist shares the dynamic buffer, packed straight after the opaque quads.
-            let mist_quads = (mist_verts.len() / 4).min(MAX_DYN_QUADS - dyn_quads);
-            std::ptr::copy_nonoverlapping(
-                mist_verts.as_ptr(),
-                (self.dyn_vb[f].ptr as *mut Vertex).add(dyn_quads * 4),
-                mist_quads * 4,
-            );
-            let ui_quads = (ui_verts.len() / 4).min(MAX_UI_QUADS);
-            std::ptr::copy_nonoverlapping(ui_verts.as_ptr(), self.ui_vb[f].ptr as *mut Vertex, ui_quads * 4);
-
+            let counts = self.upload(f, dyn_verts, mist_verts, ui_verts);
             let cb = self.cmds[f];
             self.device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty()).ok();
             self.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default()).ok();
-            let clears = [
-                vk::ClearValue { color: vk::ClearColorValue { float32: [clear[0], clear[1], clear[2], 1.0] } },
-                vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } },
-            ];
-            let rpbi = vk::RenderPassBeginInfo::default()
-                .render_pass(self.render_pass)
-                .framebuffer(self.framebuffers[img_index as usize])
-                .render_area(vk::Rect2D { offset: vk::Offset2D::default(), extent: self.extent })
-                .clear_values(&clears);
-            self.device.cmd_begin_render_pass(cb, &rpbi, vk::SubpassContents::INLINE);
-            let vp = [vk::Viewport {
-                x: 0.0,
-                y: 0.0,
-                width: self.extent.width as f32,
-                height: self.extent.height as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            }];
-            let sc = [vk::Rect2D { offset: vk::Offset2D::default(), extent: self.extent }];
-            self.device.cmd_set_viewport(cb, 0, &vp);
-            self.device.cmd_set_scissor(cb, 0, &sc);
-            let ib = self.index_buf.as_ref().unwrap().buf;
-            self.device.cmd_bind_index_buffer(cb, ib, 0, vk::IndexType::UINT32);
-            self.device.cmd_bind_descriptor_sets(
-                cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                &[self.desc_set],
-                &[],
-            );
-
-            // World.
-            self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.world_pipe);
-            self.push(cb, world_pc);
-            if let Some(svb) = &self.static_vb {
-                if self.static_quads > 0 {
-                    self.device.cmd_bind_vertex_buffers(cb, 0, &[svb.buf], &[0]);
-                    self.device.cmd_draw_indexed(cb, self.static_quads * 6, 1, 0, 0, 0);
-                }
-            }
-            if dyn_quads > 0 {
-                self.device.cmd_bind_vertex_buffers(cb, 0, &[self.dyn_vb[f].buf], &[0]);
-                self.device.cmd_draw_indexed(cb, dyn_quads as u32 * 6, 1, 0, 0, 0);
-            }
-            // Mist, after everything opaque.
-            if mist_quads > 0 {
-                self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.mist_pipe);
-                self.push(cb, world_pc);
-                self.device.cmd_bind_vertex_buffers(cb, 0, &[self.dyn_vb[f].buf], &[0]);
-                self.device.cmd_draw_indexed(cb, mist_quads as u32 * 6, 1, 0, (dyn_quads * 4) as i32, 0);
-            }
-            // HUD.
-            if ui_quads > 0 {
-                self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.ui_pipe);
-                self.push(cb, ui_pc);
-                self.device.cmd_bind_vertex_buffers(cb, 0, &[self.ui_vb[f].buf], &[0]);
-                self.device.cmd_draw_indexed(cb, ui_quads as u32 * 6, 1, 0, 0, 0);
-            }
-            self.device.cmd_end_render_pass(cb);
+            self.record_pass(cb, f, self.framebuffers[img_index as usize], self.extent, world_pc, ui_pc, clear, counts);
 
             let image = self.images[img_index as usize];
             let mut cap_buf = None;
@@ -1012,7 +1065,7 @@ impl Renderer {
                 .wait_semaphores(&signal)
                 .swapchains(&swaps)
                 .image_indices(&idxs);
-            match self.swap_fn.queue_present(self.queue, &pi) {
+            match swap_fn.queue_present(self.queue, &pi) {
                 Ok(suboptimal) if suboptimal => self.needs_resize = true,
                 Ok(_) => {}
                 Err(_) => self.needs_resize = true,
@@ -1034,6 +1087,122 @@ impl Renderer {
                 self.destroy_buffer(b);
                 cap
             })
+        }
+    }
+
+    /// Copies this frame's dynamic geometry into frame slot `f`'s buffers and returns the
+    /// (opaque, mist, HUD) quad counts.
+    unsafe fn upload(&self, f: usize, dyn_verts: &[Vertex], mist_verts: &[Vertex], ui_verts: &[Vertex]) -> (usize, usize, usize) {
+        let dyn_quads = (dyn_verts.len() / 4).min(MAX_DYN_QUADS);
+        std::ptr::copy_nonoverlapping(dyn_verts.as_ptr(), self.dyn_vb[f].ptr as *mut Vertex, dyn_quads * 4);
+        // Mist shares the dynamic buffer, packed straight after the opaque quads.
+        let mist_quads = (mist_verts.len() / 4).min(MAX_DYN_QUADS - dyn_quads);
+        std::ptr::copy_nonoverlapping(
+            mist_verts.as_ptr(),
+            (self.dyn_vb[f].ptr as *mut Vertex).add(dyn_quads * 4),
+            mist_quads * 4,
+        );
+        let ui_quads = (ui_verts.len() / 4).min(MAX_UI_QUADS);
+        std::ptr::copy_nonoverlapping(ui_verts.as_ptr(), self.ui_vb[f].ptr as *mut Vertex, ui_quads * 4);
+        (dyn_quads, mist_quads, ui_quads)
+    }
+
+    /// Records one render pass into `framebuffer`: world, mist, then HUD.
+    unsafe fn record_pass(
+        &self,
+        cb: vk::CommandBuffer,
+        f: usize,
+        framebuffer: vk::Framebuffer,
+        extent: vk::Extent2D,
+        world_pc: &PushConstants,
+        ui_pc: &PushConstants,
+        clear: [f32; 3],
+        (dyn_quads, mist_quads, ui_quads): (usize, usize, usize),
+    ) {
+        let clears = [
+            vk::ClearValue { color: vk::ClearColorValue { float32: [clear[0], clear[1], clear[2], 1.0] } },
+            vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } },
+        ];
+        let rpbi = vk::RenderPassBeginInfo::default()
+            .render_pass(self.render_pass)
+            .framebuffer(framebuffer)
+            .render_area(vk::Rect2D { offset: vk::Offset2D::default(), extent })
+            .clear_values(&clears);
+        self.device.cmd_begin_render_pass(cb, &rpbi, vk::SubpassContents::INLINE);
+        let vp = [vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: extent.width as f32,
+            height: extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }];
+        let sc = [vk::Rect2D { offset: vk::Offset2D::default(), extent }];
+        self.device.cmd_set_viewport(cb, 0, &vp);
+        self.device.cmd_set_scissor(cb, 0, &sc);
+        let ib = self.index_buf.as_ref().unwrap().buf;
+        self.device.cmd_bind_index_buffer(cb, ib, 0, vk::IndexType::UINT32);
+        self.device.cmd_bind_descriptor_sets(
+            cb,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            0,
+            &[self.desc_set],
+            &[],
+        );
+
+        // World.
+        self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.world_pipe);
+        self.push(cb, world_pc);
+        if let Some(svb) = &self.static_vb {
+            if self.static_quads > 0 {
+                self.device.cmd_bind_vertex_buffers(cb, 0, &[svb.buf], &[0]);
+                self.device.cmd_draw_indexed(cb, self.static_quads * 6, 1, 0, 0, 0);
+            }
+        }
+        if dyn_quads > 0 {
+            self.device.cmd_bind_vertex_buffers(cb, 0, &[self.dyn_vb[f].buf], &[0]);
+            self.device.cmd_draw_indexed(cb, dyn_quads as u32 * 6, 1, 0, 0, 0);
+        }
+        // Mist, after everything opaque.
+        if mist_quads > 0 {
+            self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.mist_pipe);
+            self.push(cb, world_pc);
+            self.device.cmd_bind_vertex_buffers(cb, 0, &[self.dyn_vb[f].buf], &[0]);
+            self.device.cmd_draw_indexed(cb, mist_quads as u32 * 6, 1, 0, (dyn_quads * 4) as i32, 0);
+        }
+        // HUD.
+        if ui_quads > 0 {
+            self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.ui_pipe);
+            self.push(cb, ui_pc);
+            self.device.cmd_bind_vertex_buffers(cb, 0, &[self.ui_vb[f].buf], &[0]);
+            self.device.cmd_draw_indexed(cb, ui_quads as u32 * 6, 1, 0, 0, 0);
+        }
+        self.device.cmd_end_render_pass(cb);
+    }
+
+    /// Draws one VR frame: the same scene once per eye, each into its own target. The caller
+    /// has acquired and waited on the targets' swapchain images and releases them afterwards.
+    pub fn draw_xr(&mut self, eyes: &[Eye], dyn_verts: &[Vertex], mist_verts: &[Vertex], ui_verts: &[Vertex], clear: [f32; 3]) {
+        unsafe {
+            let f = self.frame;
+            self.device.wait_for_fences(&[self.fences[f]], true, u64::MAX).ok();
+            self.device.reset_fences(&[self.fences[f]]).ok();
+            let counts = self.upload(f, dyn_verts, mist_verts, ui_verts);
+            let cb = self.cmds[f];
+            self.device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty()).ok();
+            self.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default()).ok();
+            for eye in eyes {
+                let t = &self.xr_targets[eye.target];
+                self.record_pass(cb, f, t.framebuffer, t.extent, &eye.world, &eye.ui, clear, counts);
+            }
+            self.device.end_command_buffer(cb).ok();
+            let cbs = [cb];
+            let submit = [vk::SubmitInfo::default().command_buffers(&cbs)];
+            if let Err(e) = self.device.queue_submit(self.queue, &submit, self.fences[f]) {
+                eprintln!("submit failed: {e}");
+            }
+            self.frame = (self.frame + 1) % FRAMES;
         }
     }
 
@@ -1066,6 +1235,11 @@ impl Drop for Renderer {
                 self.destroy_buffer(b);
             }
             self.destroy_swapchain_resources();
+            for t in std::mem::take(&mut self.xr_targets) {
+                self.device.destroy_framebuffer(t.framebuffer, None);
+                self.device.destroy_image_view(t.view, None);
+                self.destroy_img(t.depth);
+            }
             for s in self.render_done.drain(..).chain(self.img_avail.drain(..)) {
                 self.device.destroy_semaphore(s, None);
             }
@@ -1084,9 +1258,13 @@ impl Drop for Renderer {
             self.device.destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_descriptor_set_layout(self.set_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
-            self.swap_fn.destroy_swapchain(self.swapchain, None);
-            self.device.destroy_device(None);
-            self.surface_fn.destroy_surface(self.surface, None);
+            if let Some((surface_fn, surface, swap_fn)) = self.present.take() {
+                swap_fn.destroy_swapchain(self.swapchain, None);
+                self.device.destroy_device(None);
+                surface_fn.destroy_surface(surface, None);
+            } else {
+                self.device.destroy_device(None);
+            }
             self.instance.destroy_instance(None);
         }
     }

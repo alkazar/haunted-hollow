@@ -21,6 +21,16 @@ struct VOut {
     @location(1) color: vec4<f32>,
 };
 
+// fog.w > 1.5 means the target is an sRGB image (the VR headset's swapchain), which encodes
+// what we write: so decode our sRGB-authored colour to linear first, and it comes out as-is.
+fn to_target(c: vec3<f32>) -> vec3<f32> {
+    if (pc.fog.w > 1.5) {
+        let x = max(c, vec3<f32>(0.0));
+        return select(pow((x + 0.055) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045));
+    }
+    return c;
+}
+
 @vertex
 fn vs_main(v: VIn) -> VOut {
     var o: VOut;
@@ -32,6 +42,6 @@ fn vs_main(v: VIn) -> VOut {
 
 @fragment
 fn fs_main(i: VOut) -> @location(0) vec4<f32> {
-    let tex = textureSample(atlas, samp, i.uv);
-    return tex * i.color;
+    let c = textureSample(atlas, samp, i.uv) * i.color;
+    return vec4<f32>(to_target(c.rgb), c.a);
 }

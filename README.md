@@ -155,11 +155,35 @@ In `--debug` mode the overlay (F3) shows each remote's raw IR dots.
 Other handy flags: `--bots N` (computer players, an attract/demo mode), `--boss`,
 `--timescale X`, `--size 1920x1080`, and `--shots 10,60 --exit-after 70` to save screenshots.
 
+## VR mode
+
+`--vr` plays the ride in a VR headset through OpenXR, for one rider with the headset's
+controllers. Start an OpenXR runtime first (SteamVR, or Monado with `monado-service`), then
+run `./target/release/haunted_hollow --vr`. It needs the OpenXR loader
+(`libopenxr_loader.so.1`, Fedora package `openxr-libs`, Debian/Ubuntu `libopenxr-loader1`).
+
+* The game runs exactly as on a TV. The cart's camera always faces forward and targets
+  appear in front of it as usual. You can look around and lean to admire the scenery.
+* The HUD (crosshair, scores, banners) floats on a virtual screen 9 m ahead that fills the
+  camera's view, so it lines up with the world behind it.
+* The controller is a laser pointer. Where its beam meets the virtual screen is your aim,
+  and whichever hand last pulled its trigger does the aiming.
+
+| Touch-style controllers (also Steam Frame) | Index | Action |
+|---|---|---|
+| Trigger | Trigger | Shoot / join |
+| A / X | A | Start |
+| Left menu | B | Pause |
+| B / Y (while paused) | Thumbstick click (while paused) | Back to the title screen |
+
+The game holds still while the runtime's own menu has your attention. Ctrl+C quits.
+
 ## Code tour
 
 | File | What |
 |---|---|
-| `src/vk.rs` | Vulkan renderer: swapchain, world + HUD pipelines, atlas, quad batching, screenshots |
+| `src/vk.rs` | Vulkan renderer: swapchain, world + HUD pipelines, atlas, quad batching, screenshots, VR eye targets |
+| `src/xr.rs` | VR mode: OpenXR session, head pose inside the cart, controller aiming, the HUD's virtual screen |
 | `shaders/*.wgsl` | World shader (baked light, rider's lantern, fog) and HUD shader |
 | `src/atlas.rs` | Procedural Minecraft-style block textures + 8×8 pixel font |
 | `src/world.rs` | Voxel world generation, RGB flood-fill lighting + moonlight, meshing with AO |

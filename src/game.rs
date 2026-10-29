@@ -13,6 +13,8 @@ use crate::world::{zone_at, World, Zone, DOOR_FLOOR, DOOR_HALF, DOOR_Z};
 use glam::{Mat4, Vec2, Vec3, Vec4Swizzles};
 
 pub const PLAYER_COLORS: [[f32; 3]; 4] = [[1.0, 0.28, 0.28], [0.3, 0.6, 1.0], [0.35, 0.95, 0.4], [1.0, 0.86, 0.2]];
+/// Vertical field of view of the camera, in degrees.
+pub const FOV_Y: f32 = 70.0;
 const PLAYER_NAMES: [&str; 4] = ["RED", "BLUE", "GREEN", "YELLOW"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -20,6 +22,8 @@ pub enum SourceId {
     Wii(u32),
     Mouse,
     Bot(u32),
+    /// The VR controllers (VR mode is single player).
+    Vr,
 }
 
 /// One input source's state this frame (aim in pixels).
@@ -261,6 +265,9 @@ struct Spawn {
 pub struct FrameOut {
     pub viewproj: Mat4,
     pub cam: Vec3,
+    /// Camera look direction and up (not necessarily at right angles).
+    pub dir: Vec3,
+    pub up: Vec3,
     pub fog: [f32; 3],
     pub fog_range: (f32, f32),
     pub lamp: f32,
@@ -543,7 +550,7 @@ impl Game {
             }
             p.joined = false;
             p.aim_visible = false;
-            if let Some(src @ SourceId::Wii(_)) = p.source {
+            if let Some(src @ (SourceId::Wii(_) | SourceId::Vr)) = p.source {
                 self.led_requests.push((src, None));
                 p.source = None;
             }
@@ -727,7 +734,7 @@ impl Game {
 
     fn proj(&self) -> Mat4 {
         let aspect = self.screen.x / self.screen.y.max(1.0);
-        Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 800.0)
+        Mat4::perspective_rh(FOV_Y.to_radians(), aspect, 0.05, 800.0)
     }
 
     /// Predicted camera `ahead` seconds from now (used to place targets in view).
@@ -1499,7 +1506,7 @@ impl Game {
                     }
                 }
                 None => {
-                    if matches!(inp.id, SourceId::Wii(_)) && (inp.join || inp.fire_pressed) {
+                    if matches!(inp.id, SourceId::Wii(_) | SourceId::Vr) && (inp.join || inp.fire_pressed) {
                         if let Some(free) = self.players.iter().position(|p| !p.joined && p.source.is_none())
                             .or_else(|| self.players.iter().position(|p| !p.joined))
                         {
@@ -2006,7 +2013,7 @@ impl Game {
     }
 
     pub fn frame(&self) -> FrameOut {
-        FrameOut { viewproj: self.viewproj, cam: self.cam, fog: self.fog, fog_range: self.fog_range, lamp: self.lamp }
+        FrameOut { viewproj: self.viewproj, cam: self.cam, dir: self.cam_dir, up: self.cam_up, fog: self.fog, fog_range: self.fog_range, lamp: self.lamp }
     }
 
     pub fn static_mesh(&self) -> Vec<Vertex> {
