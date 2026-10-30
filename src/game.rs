@@ -357,6 +357,8 @@ pub struct Game {
     screen: Vec2,
     pub fps: f32,
     pub debug_lines: Vec<String>,
+    /// Remotes connect through a DolphinBar, so there's no 1+2 hint on the title screen.
+    pub dolphinbar: bool,
     shake: f32,
     /// Every target spawned, when recording for the PS1 export.
     spawn_log: Option<Vec<SpawnRecord>>,
@@ -425,6 +427,7 @@ impl Game {
             paused: false,
             debug,
             show_debug: debug,
+            dolphinbar: false,
             vr: false,
             menu_zoom: 1.0,
             title_join_t: None,
@@ -2682,7 +2685,7 @@ impl Game {
             format!("{key}  ({:.0})", left.max(0.0).ceil())
         };
         ui.text_fit(&msg, w * 0.5, h * 0.84, 1.3, w * 0.9, [1.0, 0.9, 0.5, 1.0], Align::Center);
-        if !self.debug {
+        if !self.debug && !self.dolphinbar {
             let hint = "REMOTE NOT CONNECTED? PRESS 1 AND 2 TOGETHER";
             ui.text_fit(hint, w * 0.5, h * 0.84 + 13.0 * unit, 0.8, w * 0.9, [0.8, 0.8, 0.9, 0.8], Align::Center);
         }

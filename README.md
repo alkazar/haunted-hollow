@@ -91,6 +91,23 @@ The game talks to the remotes directly over Bluetooth, so the `hid-wiimote` kern
 udev rules and controller remappers like InputPlumber don't get involved. It only needs
 BlueZ running and the adapter powered on (`bluetoothctl power on`).
 
+**Or: use a Mayflash DolphinBar**
+
+If a DolphinBar in **mode 4** is plugged in, the game uses it instead of the computer's
+Bluetooth. The game checks for the bar when it starts, so plug it in before starting the game. Remotes sync with
+the bar: press 1+2 (or SYNC) on a remote, the same as in Dolphin. The bar is also the sensor bar.
+Press the bar's MODE button until the LED for mode 4 lights.
+
+The bar's four HID devices are root-only by default, so it needs a udev rule once:
+
+```sh
+echo 'KERNEL=="hidraw*", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="0306", MODE="0660", TAG+="uaccess"' \
+  | sudo tee /etc/udev/rules.d/60-dolphinbar.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+Without it the game logs `can't open the DolphinBar ... Permission denied`.
+
 **2. Set up the sensor bar**
 
 The remote aims by seeing two IR lights, so you need a **sensor bar**: a Wii console's bar (the
@@ -342,7 +359,7 @@ themselves: `CMAKE_ARGS=-DHH_BOTS=2 wii/build.sh` (or `ps1/build.sh`).
 | `src/game.rs` | Spawning, behaviours, hit testing, scoring, boss, title/results screens |
 | `src/synth.rs` | Tiny synthesizer: instruments, drums, the songs and every sound effect |
 | `src/audio.rs` | Real-time mixer thread, crossfading music, ALSA output via dlopen |
-| `src/wiimote.rs` | Wii Remotes over Bluetooth L2CAP: BlueZ discovery, IR camera setup, buttons, IR pointer, rumble, LEDs |
+| `src/wiimote.rs` | Wii Remotes through a DolphinBar (hidraw) or over Bluetooth L2CAP: BlueZ discovery, IR camera setup, buttons, IR pointer, rumble, LEDs |
 | `src/highscores.rs` | The top-ten table and its save file |
 | `src/main.rs` | Window, input, game loop, command-line flags |
 | `frame/` | Steam Frame: cross-compiling container, start script, headless devkit upload, library artwork |

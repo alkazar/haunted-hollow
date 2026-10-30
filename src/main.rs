@@ -151,6 +151,7 @@ impl App {
         let screen = self.screen();
         let mut out = vec![];
         let remotes = self.wii.poll();
+        self.game.dolphinbar = self.wii.dolphinbar();
         let mut dbg = vec![format!("WII REMOTES {}", remotes.len())];
         for r in &remotes {
             use wiimote::*;
