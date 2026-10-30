@@ -33,6 +33,7 @@ Testing:
   --shots T1,T2,...    Save screenshots (PPM) at these simulation times (seconds)
   --shot-dir DIR       Where to save screenshots
   --exit-after S       Quit after S seconds of simulation time
+  --no-hud             Draw only the 3D scene (for capturing artwork)
 
 Wii Remotes: press 1+2 together to connect one (no pairing needed).
 Wii Remote buttons:  B (trigger) or A = shoot / join,  + = start,

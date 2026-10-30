@@ -35,6 +35,7 @@ struct Args {
     shots: Vec<f32>,
     shot_dir: String,
     exit_after: Option<f32>,
+    no_hud: bool,
     size: (u32, u32),
     ir: wiimote::IrConfig,
     boss: bool,
@@ -54,6 +55,7 @@ fn parse_args() -> Args {
         shots: vec![],
         shot_dir: ".".into(),
         exit_after: None,
+        no_hud: false,
         size: (1280, 720),
         ir: wiimote::IrConfig { flip_x: true, flip_y: false, gain: 1.35, y_offset: 0.0 },
         boss: false,
@@ -81,6 +83,7 @@ fn parse_args() -> Args {
             "--shots" => a.shots = val(&mut i).split(',').filter_map(|s| s.parse().ok()).collect(),
             "--shot-dir" => a.shot_dir = val(&mut i),
             "--exit-after" => a.exit_after = val(&mut i).parse().ok(),
+            "--no-hud" => a.no_hud = true,
             "--boss" => a.boss = true,
             "--mute" => a.mute = true,
             "--vr" => a.vr = true,
@@ -260,7 +263,9 @@ impl App {
         self.mist_buf.clear();
         self.game.draw_mist(&mut self.mist_buf);
         let mut ui = hud::Ui::new(screen.x, screen.y);
-        self.game.draw_ui(&mut ui);
+        if !self.args.no_hud {
+            self.game.draw_ui(&mut ui);
+        }
 
         let f = self.game.frame();
         let world_pc = vk::PushConstants {

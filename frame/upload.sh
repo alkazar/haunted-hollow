@@ -92,6 +92,13 @@ if echo "$result" | json ".get('error') or ''" | grep .; then
 fi
 echo "Installed: it is in the headset's library as \"Devkit Game: $gameid\"."
 
+# Library artwork (frame/art.py makes it). Not fatal: the game works without it.
+if [ -d "$root/frame/art" ]; then
+    rsync -az --delete -e "$rsh" "$root/frame/steam-art.py" "$root/frame/art" "$login@$host:.cache/$gameid-art/"
+    remote python3 .cache/$gameid-art/steam-art.py $gameid .cache/$gameid-art/art ||
+        echo "(could not install the library artwork)"
+fi
+
 if [ $run = 1 ]; then
     remote python3 devkit-utils/steam-devkit-rpc run-game gameid=$gameid >/dev/null
     echo "Started on the headset."

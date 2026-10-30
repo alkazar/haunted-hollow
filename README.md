@@ -204,6 +204,11 @@ starts it. It does what the SteamOS Devkit Client's Title Upload does, with the 
 the last build, and `FRAME_RUNTIME=SteamLinuxRuntime_sniper-arm64` (for example) picks a
 different runtime than the default `SteamLinuxRuntime_4-arm64`.
 
+It also gives the game its library artwork from `frame/art/` (capsules, hero, logo, icon),
+copied into the headset's Steam grid folder under the shortcut's app ID. `frame/art.py`
+remakes the images from scenes rendered by the game (`--no-hud`) with the title drawn in
+the game's font; it needs Pillow and a release build.
+
 The official client works too: Title Upload with **Local Folder**
 `target/frame/haunted-hollow`, **Start Command** `haunted-hollow.sh` (which adds `--vr`)
 and an ARM64 Steam Linux Runtime.
@@ -340,7 +345,7 @@ themselves: `CMAKE_ARGS=-DHH_BOTS=2 wii/build.sh` (or `ps1/build.sh`).
 | `src/wiimote.rs` | Wii Remotes over Bluetooth L2CAP: BlueZ discovery, IR camera setup, buttons, IR pointer, rumble, LEDs |
 | `src/highscores.rs` | The top-ten table and its save file |
 | `src/main.rs` | Window, input, game loop, command-line flags |
-| `frame/` | Steam Frame: cross-compiling container, start script, headless devkit upload |
+| `frame/` | Steam Frame: cross-compiling container, start script, headless devkit upload, library artwork |
 | `src/console_export.rs` | `--export-ps1`, `--export-wii`: the world, camera path, targets, models, textures and sound for the consoles |
 | `shared/game.c` | Consoles: the game itself (a port of `src/game.rs`), with `cam.c` and `util.c` |
 | `shared/*.h` | Consoles: the data formats and what each console provides (graphics, sound, controllers) |
