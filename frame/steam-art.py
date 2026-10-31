@@ -47,8 +47,9 @@ def find(gameid):
     """(grid folder, app ID) for every Steam user that has the devkit game."""
     found = []
     for vdf in glob.glob(os.path.expanduser('~/.steam/steam/userdata/*/config/shortcuts.vdf')):
-        shortcuts = parse(open(vdf, 'rb').read())[0].get('shortcuts', {})
-        for s in shortcuts.values():
+        # The headset's Steam writes "Shortcuts"; desktop Steam writes "shortcuts".
+        top = {k.lower(): v for k, v in parse(open(vdf, 'rb').read())[0].items()}
+        for s in top.get('shortcuts', {}).values():
             if {k.lower(): v for k, v in s.items()}.get('devkitgameid') == gameid:
                 found.append((os.path.join(os.path.dirname(vdf), 'grid'), s['appid']))
     return found
