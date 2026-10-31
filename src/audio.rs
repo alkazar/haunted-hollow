@@ -30,8 +30,9 @@ pub enum Sfx {
     Rumble,
     Boom,
     Ding,
+    DeepBoing,
 }
-const SFX_COUNT: usize = 19;
+const SFX_COUNT: usize = 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Music {
@@ -88,6 +89,7 @@ impl Bank {
             synth::sfx_rumble(),
             synth::sfx_boom(),
             synth::sfx_ding(),
+            synth::sfx_boing_deep(),
         ];
         assert_eq!(sfx.len(), SFX_COUNT);
         Bank {
@@ -140,7 +142,7 @@ impl Bank {
         }
         let names = [
             "pop", "shot", "bonus", "poof", "ghost", "squeak", "rattle", "zip", "boing", "flutter", "beep", "go", "join",
-            "whoosh", "bonk", "laugh", "rumble", "boom", "ding",
+            "whoosh", "bonk", "laugh", "rumble", "boom", "ding", "deep_boing",
         ];
         for (i, b) in self.sfx.iter().enumerate() {
             synth::write_wav(&format!("{dir}/sfx_{}.wav", names[i]), b)?;

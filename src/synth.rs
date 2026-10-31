@@ -556,6 +556,25 @@ pub fn sfx_rattle() -> Buf {
     b
 }
 
+/// The haunted painting: the pumpkin's boing, but deeper (about 7 semitones down), with a
+/// slower wobble and a longer tail.
+pub fn sfx_boing_deep() -> Buf {
+    let len = 0.65;
+    let mut b = Buf::new(len);
+    let mut ph = 0.0;
+    for k in 0..b.frames() {
+        let t = k as f32 / RATE;
+        let f = 147.0 * (1.0 + 0.5 * (TAU * 10.0 * t).sin() * (-t * 4.0).exp()) * (1.0 + 0.7 * t);
+        ph += f / RATE;
+        // A touch of the second harmonic keeps it audible on small speakers.
+        let v = (sine(ph) + 0.25 * sine(ph * 2.0)) * (-t * 4.5).exp();
+        b.data[k * 2] = v;
+        b.data[k * 2 + 1] = v;
+    }
+    b.normalize(0.55);
+    b
+}
+
 pub fn sfx_zip() -> Buf {
     let mut b = sweep(0.35, 1800.0, 300.0, 5.0, square);
     b.normalize(0.35);

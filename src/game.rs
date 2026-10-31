@@ -1299,7 +1299,7 @@ impl Game {
             Kind::Book => (Sfx::Flutter, 0.4),
             Kind::Pumpkin => (Sfx::Boing, 0.35),
             Kind::Candy => (Sfx::Bonus, 0.25),
-            Kind::Portrait => (Sfx::Rattle, 0.3),
+            Kind::Portrait => (Sfx::DeepBoing, 0.5),
         };
         let k = kind.index();
         if self.total_t - self.last_spawn_sound[k] < 1.2 {

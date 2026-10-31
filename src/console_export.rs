@@ -1067,6 +1067,7 @@ fn export_sound(t: &Target, dir: &str) -> std::io::Result<()> {
         synth::sfx_rumble(),
         synth::sfx_boom(),
         synth::sfx_ding(),
+        synth::sfx_boing_deep(),
     ];
     let first_sfx = samples.len();
     for b in &sfx {

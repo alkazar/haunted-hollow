@@ -568,8 +568,8 @@ static F3 motion(const Target *t, float a) {
 }
 
 static void spawn_sound(int kind, F3 at) {
-	static const int8_t snd[8] = { SFX_BOING, SFX_GHOST, SFX_SQUEAK, SFX_FLUTTER, SFX_RATTLE, SFX_ZIP, SFX_BONUS, SFX_RATTLE };
-	static const float vol[8] = { 0.35f, 0.35f, 0.3f, 0.4f, 0.45f, 0.3f, 0.25f, 0.3f };
+	static const int8_t snd[8] = { SFX_BOING, SFX_GHOST, SFX_SQUEAK, SFX_FLUTTER, SFX_RATTLE, SFX_ZIP, SFX_BONUS, SFX_DEEP_BOING };
+	static const float vol[8] = { 0.35f, 0.35f, 0.3f, 0.4f, 0.45f, 0.3f, 0.25f, 0.5f };
 	if (G.total_t - G.last_spawn_sound[kind] < 1.2f)
 		return;
 	G.last_spawn_sound[kind] = G.total_t;
