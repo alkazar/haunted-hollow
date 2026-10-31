@@ -108,6 +108,8 @@ const PORTRAIT_PEEL: f32 = 0.8;
 const MAX_AIM_BONUS: u32 = 5000;
 /// Bonus for every rider when the team pops every enemy it saw.
 const SWEEP_BONUS: u32 = 5000;
+/// Further bonus for every rider when, on top of that, nobody missed a single shot.
+const PERFECT_BONUS: u32 = 20000;
 /// Seconds into a guard cycle at which the Pumpkin King's hands are back down.
 const GUARD_END: f32 = 2.15;
 /// Most seconds a target may stay past its life while the cart closes in on it.
@@ -179,8 +181,8 @@ pub struct Player {
     pub shots: u32,
     /// Accuracy bonus, added to `score` when the results come up.
     bonus: u32,
-    /// The team's clean-sweep bonus, likewise.
-    sweep_bonus: u32,
+    /// The team's bonuses (clean sweep, perfect ride), likewise.
+    team_bonus: u32,
     aim: Vec2,
     aim_target: Vec2,
     aim_visible: bool,
@@ -203,7 +205,7 @@ impl Player {
             hits: 0,
             shots: 0,
             bonus: 0,
-            sweep_bonus: 0,
+            team_bonus: 0,
             aim: Vec2::ZERO,
             aim_target: Vec2::ZERO,
             aim_visible: false,
@@ -221,7 +223,7 @@ impl Player {
         self.hits = 0;
         self.shots = 0;
         self.bonus = 0;
-        self.sweep_bonus = 0;
+        self.team_bonus = 0;
         self.counts = [0; 9];
     }
 }
@@ -1490,16 +1492,16 @@ impl Game {
                 if self.state_t > OUTRO_TIME {
                     self.state = State::Results;
                     self.state_t = 0.0;
-                    let sweep = self.enemies.0 > 0 && self.enemies.1 == self.enemies.0;
+                    let team = self.team_bonus();
                     for p in self.players.iter_mut().filter(|p| p.joined) {
                         p.bonus = accuracy_bonus(p.hits, p.shots);
-                        p.sweep_bonus = if sweep { SWEEP_BONUS } else { 0 };
-                        p.score += p.bonus + p.sweep_bonus;
+                        p.team_bonus = team;
+                        p.score += p.bonus + p.team_bonus;
                     }
                 }
             }
             State::Results => {
-                if self.state_t - dt < 0.3 && self.state_t >= 0.3 && self.players.iter().any(|p| p.sweep_bonus > 0) {
+                if self.state_t - dt < 0.3 && self.state_t >= 0.3 && self.players.iter().any(|p| p.team_bonus > 0) {
                     self.sfx(Sfx::Bonus, 0.7, 0.0, 1.0);
                 }
                 // A "ding" as each row of the scoreboard appears.
@@ -2782,6 +2784,25 @@ impl Game {
         }
     }
 
+    /// The team popped every enemy it saw.
+    fn clean_sweep(&self) -> bool {
+        self.enemies.0 > 0 && self.enemies.1 == self.enemies.0
+    }
+
+    /// A clean sweep in which every rider hit with every shot.
+    fn perfect_ride(&self) -> bool {
+        self.clean_sweep() && self.players.iter().filter(|p| p.joined).all(|p| p.shots > 0 && p.hits == p.shots)
+    }
+
+    /// What the team's bonuses are worth to each rider.
+    fn team_bonus(&self) -> u32 {
+        match (self.clean_sweep(), self.perfect_ride()) {
+            (_, true) => SWEEP_BONUS + PERFECT_BONUS,
+            (true, false) => SWEEP_BONUS,
+            _ => 0,
+        }
+    }
+
     fn draw_results(&self, ui: &mut Ui) {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
         ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.94]);
@@ -2792,8 +2813,10 @@ impl Game {
         if self.state_t > 0.2 {
             let (seen, popped) = self.enemies;
             let a = smooth((self.state_t - 0.2) / 0.3);
-            let (msg, c) = if seen > 0 && popped == seen {
-                let k = 0.8 + 0.2 * (self.state_t * 6.0).sin();
+            let k = 0.8 + 0.2 * (self.state_t * 6.0).sin();
+            let (msg, c) = if self.perfect_ride() {
+                (format!("PERFECT RIDE! ALL {seen} POPPED, NO MISSES  +{} TEAM BONUS", SWEEP_BONUS + PERFECT_BONUS), [1.0, 0.85 * k, 0.3 * k, a])
+            } else if self.clean_sweep() {
                 (format!("ALL {seen} ENEMIES POPPED!  +{SWEEP_BONUS} TEAM BONUS"), [1.0, 0.85 * k, 0.3 * k, a])
             } else {
                 (format!("ENEMIES POPPED: {popped} OF {seen}"), [0.85, 0.85, 0.95, a])
@@ -2839,7 +2862,7 @@ impl Game {
             // (and the team bonus, shown above the cards).
             let row_t = self.state_t - 0.4 * (order.len() - rank) as f32;
             let tally = smooth((row_t - 0.8) / 0.8);
-            let bonus = p.bonus + p.sweep_bonus;
+            let bonus = p.bonus + p.team_bonus;
             let score = format!("{}", p.score - bonus + (bonus as f32 * tally) as u32);
             let ss = (line * 0.36).min(col_score / ui.text_width(&score, 1.0));
             ui.text(&score, rx, y + row_h * 0.12, ss, [1.0, 1.0, 1.0, appear], Align::Right);
@@ -3192,18 +3215,29 @@ mod tests {
     #[test]
     fn popping_every_enemy_gives_the_whole_team_a_bonus() {
         let screen = Vec2::new(1280.0, 720.0);
-        for (enemies, bonus) in [((40, 40), SWEEP_BONUS), ((40, 39), 0)] {
+        // (enemies seen and popped, each rider's hits and shots) -> team bonus
+        let cases = [
+            ((40, 40), (30, 50), SWEEP_BONUS),
+            ((40, 39), (30, 50), 0),
+            ((40, 40), (30, 30), SWEEP_BONUS + PERFECT_BONUS),
+            ((40, 39), (30, 30), 0),
+        ];
+        for (enemies, (hits, shots), bonus) in cases {
             let track = Track::new();
             let world = crate::world::generate(&track);
             let mut g = Game::new(track, world, false, 0);
             g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
             g.enemies = enemies;
+            for p in &mut g.players[..2] {
+                (p.hits, p.shots) = (hits, shots);
+            }
             g.state = State::Outro;
             g.state_t = OUTRO_TIME;
             g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
             assert_eq!(g.state, State::Results);
             for p in &g.players[..2] {
-                assert_eq!((p.sweep_bonus, p.score), (bonus, bonus), "after popping {enemies:?}");
+                assert_eq!(p.team_bonus, bonus, "after popping {enemies:?} with {hits} of {shots} shots");
+                assert_eq!(p.score, p.team_bonus + accuracy_bonus(hits, shots));
             }
         }
     }
