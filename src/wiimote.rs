@@ -4,7 +4,10 @@
 //! DolphinBar: in mode 4 the bar shows up as four USB HID devices (057e:0306, one per slot) that
 //! pass the Wii Remote HID protocol straight through, so the game opens their hidraw nodes.
 //! Remotes sync with the bar itself (1+2 or SYNC), and the bar is also the sensor bar. Writing to
-//! a slot with no remote in it fails with EPIPE, which is how an empty slot is told apart.
+//! a slot with no remote in it fails with EPIPE, which is how an empty slot is told apart. The
+//! bar doesn't keep a remote in the same slot when it reconnects, so a remote is recognized by its
+//! factory accelerometer calibration (different on every remote) and keeps its id, and so its
+//! player, until the game quits.
 //!
 //! Direct: no pairing, kernel driver or udev rule: a remote put into discoverable mode with 1+2 is found
 //! through BlueZ discovery (D-Bus), then the game opens the remote's two L2CAP channels itself
@@ -18,6 +21,7 @@
 
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -52,6 +56,10 @@ const BTPROTO_L2CAP: i32 = 0;
 #[derive(Clone, Default)]
 struct Shared {
     connected: bool,
+    /// The connection driving this remote (see `add_remote`); a stale one stops when it changes.
+    conn: u64,
+    /// DolphinBar slot (0..3) the remote is in.
+    slot: Option<usize>,
     buttons: u32,
     pressed: u32, // edges since last poll
     dots: [Option<(i32, i32)>; 4],
@@ -66,6 +74,8 @@ struct Shared {
 #[derive(Clone, Debug)]
 pub struct RemoteState {
     pub id: u32,
+    /// DolphinBar slot (0..3), if the remote is on a DolphinBar.
+    pub slot: Option<usize>,
     pub buttons: u32,
     pub pressed: u32,
     /// Pointer position in 0..1 screen coordinates, if the sensor bar is visible.
@@ -119,14 +129,14 @@ impl WiimoteManager {
                     continue;
                 }
                 let dots: Vec<(i32, i32)> = s.dots.iter().flatten().copied().collect();
-                snap.push((id, s.buttons, s.pressed, dots, s.report_rate));
+                snap.push((id, s.slot, s.buttons, s.pressed, dots, s.report_rate));
                 s.pressed = 0;
             }
         }
         let mut out = vec![];
-        for (id, buttons, pressed, dots, report_rate) in snap {
+        for (id, slot, buttons, pressed, dots, report_rate) in snap {
             let aim = self.compute_aim(id, &dots);
-            out.push(RemoteState { id, buttons, pressed, aim, raw_dots: dots, report_rate });
+            out.push(RemoteState { id, slot, buttons, pressed, aim, raw_dots: dots, report_rate });
         }
         out.sort_by_key(|r| r.id);
         out
@@ -197,7 +207,7 @@ type Objects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVal
 fn scan_loop(remotes: Remotes, dolphinbar: bool) {
     let mut ids: HashMap<String, u32> = HashMap::new();
     if dolphinbar {
-        dolphinbar_session(&remotes, &mut ids);
+        dolphinbar_session(&remotes);
     }
     loop {
         if let Err(e) = scan_session(&remotes, &mut ids) {
@@ -207,21 +217,25 @@ fn scan_loop(remotes: Remotes, dolphinbar: bool) {
     }
 }
 
-/// Marks remote `id` connected. A remote that reconnects keeps its player LED; a new one lights
-/// all four (connected, no player yet) so it doesn't look switched off.
-fn add_remote(remotes: &Remotes, id: u32) {
-    let mut map = remotes.lock().unwrap();
+/// Marks remote `id` connected through a new connection, and returns that connection's token.
+/// A remote that reconnects keeps its player LED; a new one lights all four (connected, no player
+/// yet) so it doesn't look switched off.
+fn add_remote(map: &mut HashMap<u32, Shared>, id: u32, slot: Option<usize>) -> u64 {
+    static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
+    let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let s = map.entry(id).or_default();
     let leds = if s.leds != 0 { s.leds } else { 0xF0 };
-    *s = Shared { connected: true, leds, ..Shared::default() };
+    *s = Shared { connected: true, conn, slot, leds, ..Shared::default() };
+    conn
 }
 
-fn remove_remote(remotes: &Remotes, id: u32) {
-    if let Some(s) = remotes.lock().unwrap().get_mut(&id) {
+/// Marks remote `id` disconnected, unless another connection has taken it over since.
+fn remove_remote(remotes: &Remotes, id: u32, conn: u64) {
+    if let Some(s) = remotes.lock().unwrap().get_mut(&id).filter(|s| s.conn == conn) {
         s.connected = false;
         s.buttons = 0;
+        eprintln!("[wiimote] remote #{id} disconnected");
     }
-    eprintln!("[wiimote] remote #{id} disconnected");
 }
 
 // ------------------------------------------------------------------ DolphinBar (hidraw)
@@ -243,18 +257,19 @@ fn dolphinbar_slots() -> Vec<(String, String)> {
 }
 
 /// Runs one thread per DolphinBar slot, and waits for the bar to come back if it's unplugged.
-fn dolphinbar_session(remotes: &Remotes, ids: &mut HashMap<String, u32>) -> ! {
+fn dolphinbar_session(remotes: &Remotes) -> ! {
     eprintln!("[wiimote] using the DolphinBar (press 1+2 or SYNC on a remote to sync it with the bar)");
     let mut threads: HashMap<String, thread::JoinHandle<()>> = HashMap::new();
     let mut warned = false;
     let mut plugged = true;
+    let known: Known = Arc::new(Mutex::new(HashMap::new()));
     loop {
         let slots = dolphinbar_slots();
         if slots.is_empty() == plugged {
             plugged = !plugged;
             eprintln!("[wiimote] DolphinBar {}", if plugged { "plugged back in" } else { "unplugged" });
         }
-        for (phys, dev) in slots {
+        for (slot, (phys, dev)) in slots.into_iter().enumerate() {
             if threads.get(&phys).is_some_and(|t| !t.is_finished()) {
                 continue;
             }
@@ -268,10 +283,8 @@ fn dolphinbar_session(remotes: &Remotes, ids: &mut HashMap<String, u32>) -> ! {
                     continue;
                 }
             };
-            let next = ids.len() as u32;
-            let id = *ids.entry(phys.clone()).or_insert(next);
-            let r = remotes.clone();
-            if let Ok(t) = thread::Builder::new().name(format!("wiimote-{id}")).spawn(move || run_slot(id, fd, &r)) {
+            let (r, k) = (remotes.clone(), known.clone());
+            if let Ok(t) = thread::Builder::new().name(format!("dolphinbar-{slot}")).spawn(move || run_slot(slot, fd, &r, &k)) {
                 threads.insert(phys, t);
             }
         }
@@ -279,8 +292,11 @@ fn dolphinbar_session(remotes: &Remotes, ids: &mut HashMap<String, u32>) -> ! {
     }
 }
 
+/// Remote ids by factory accelerometer calibration, for remotes seen on the DolphinBar.
+type Known = Arc<Mutex<HashMap<[u8; 10], u32>>>;
+
 /// Waits for a remote to sync into a DolphinBar slot and runs it, until the bar goes away.
-fn run_slot(id: u32, fd: OwnedFd, remotes: &Remotes) {
+fn run_slot(slot: usize, fd: OwnedFd, remotes: &Remotes, known: &Known) {
     let link = Link { fd, hidraw: true };
     let mut warned = false;
     loop {
@@ -289,18 +305,62 @@ fn run_slot(id: u32, fd: OwnedFd, remotes: &Remotes) {
             Err(e) if e.raw_os_error() == Some(libc::ENODEV) => return,
             Err(e) => {
                 if e.raw_os_error() != Some(libc::EPIPE) && !warned {
-                    eprintln!("[wiimote] DolphinBar slot for remote #{id}: {e}");
+                    eprintln!("[wiimote] DolphinBar slot {}: {e}", slot + 1);
                     warned = true;
                 }
                 thread::sleep(Duration::from_millis(500));
                 continue;
             }
         }
-        eprintln!("[wiimote] remote #{id} connected (DolphinBar)");
-        add_remote(remotes, id);
-        run_remote(id, &link, remotes);
-        remove_remote(remotes, id);
+        let calib = match read_calibration(&link) {
+            Ok(c) => Some(c),
+            Err(e) if e.raw_os_error() == Some(libc::ENODEV) => return,
+            Err(e) => {
+                eprintln!("[wiimote] DolphinBar slot {}: can't read the remote's calibration ({e}), so it won't get its player back if it reconnects", slot + 1);
+                None
+            }
+        };
+        let (id, conn) = {
+            let mut map = remotes.lock().unwrap();
+            let mut known = known.lock().unwrap();
+            // A remote seen before gets its old id back, unless that id is still in use. A slot whose
+            // remote moved elsewhere can still look connected, but it gets no reports; a second
+            // remote with the same calibration does.
+            let old = calib.and_then(|c| known.get(&c).copied());
+            let id = match old {
+                Some(id) if map.get(&id).is_none_or(|s| !s.connected || s.report_rate == 0) => id,
+                _ => {
+                    let id = map.len() as u32;
+                    if let Some(c) = calib {
+                        known.entry(c).or_insert(id);
+                    }
+                    id
+                }
+            };
+            (id, add_remote(&mut map, id, Some(slot)))
+        };
+        eprintln!("[wiimote] remote #{id} connected (DolphinBar slot {})", slot + 1);
+        run_remote(id, conn, &link, remotes);
+        remove_remote(remotes, id, conn);
     }
+}
+
+/// Reads the remote's factory accelerometer calibration (EEPROM 0x16, 10 bytes).
+fn read_calibration(link: &Link) -> std::io::Result<[u8; 10]> {
+    link.out(&[0x17, 0x00, 0x00, 0x00, 0x16, 0x00, 0x0A])?;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        // 0x21: buttons, size-1 and error nibbles, address, 16 data bytes.
+        if let Some(r) = link.recv(Duration::from_millis(100))? {
+            if r.len() >= 16 && r[0] == 0x21 && r[4..6] == [0x00, 0x16] {
+                if r[3] & 0x0F != 0 {
+                    return Err(std::io::Error::other(format!("read error {:#x}", r[3] & 0x0F)));
+                }
+                return Ok(r[6..16].try_into().unwrap());
+            }
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no reply"))
 }
 
 // ------------------------------------------------------------------ discovery (BlueZ D-Bus)
@@ -370,7 +430,7 @@ fn scan_session(remotes: &Remotes, ids: &mut HashMap<String, u32>) -> zbus::Resu
                     let id = *ids.entry(addr.clone()).or_insert(next);
                     eprintln!("[wiimote] remote #{id} connected ({addr})");
                     // Count it as active right away so the next pass doesn't connect it twice.
-                    add_remote(remotes, id);
+                    let conn = add_remote(&mut remotes.lock().unwrap(), id, None);
                     let r = remotes.clone();
                     thread::Builder::new()
                         .name(format!("wiimote-{id}"))
@@ -378,8 +438,8 @@ fn scan_session(remotes: &Remotes, ids: &mut HashMap<String, u32>) -> zbus::Resu
                             // Output and input reports both go on the interrupt channel; the
                             // control channel only has to stay open.
                             let _ctrl = ctrl;
-                            run_remote(id, &Link { fd: intr, hidraw: false }, &r);
-                            remove_remote(&r, id);
+                            run_remote(id, conn, &Link { fd: intr, hidraw: false }, &r);
+                            remove_remote(&r, id, conn);
                         })
                         .ok();
                 }
@@ -521,6 +581,7 @@ impl Link {
 
 struct Remote<'a> {
     id: u32,
+    conn: u64,
     link: &'a Link,
     remotes: &'a Remotes,
     /// What the remote currently has (sent with every output report).
@@ -583,11 +644,15 @@ impl Remote<'_> {
         self.set_report_mode().map_err(|e| e.to_string())
     }
 
-    /// Sends the LEDs / rumble the game asked for, if they changed.
+    /// Sends the LEDs / rumble the game asked for, if they changed. Fails once another connection
+    /// has taken the remote over.
     fn sync_outputs(&mut self) -> std::io::Result<()> {
         let (leds, rumble) = {
             let map = self.remotes.lock().unwrap();
             let Some(s) = map.get(&self.id) else { return Ok(()) };
+            if s.conn != self.conn {
+                return Err(std::io::Error::other("taken over"));
+            }
             (s.leds, s.rumble_until.is_some_and(|t| t > Instant::now()))
         };
         if leds != self.leds || rumble != self.rumble {
@@ -608,7 +673,7 @@ impl Remote<'_> {
             self.reset = true;
         }
         let mut map = self.remotes.lock().unwrap();
-        let Some(s) = map.get_mut(&self.id) else { return };
+        let Some(s) = map.get_mut(&self.id).filter(|s| s.conn == self.conn) else { return };
         // Every report from 0x20 up except 0x3D starts with the core buttons.
         if (0x20..=0x3F).contains(&id) && id != 0x3D {
             let raw = u16::from_le_bytes([r[1], r[2]]);
@@ -637,8 +702,9 @@ impl Remote<'_> {
     }
 }
 
-/// Runs a connected remote until it disconnects.
-fn run_remote(id: u32, link: &Link, remotes: &Remotes) {
+/// Runs a connected remote until it disconnects. On a DolphinBar it also stops when the remote
+/// resets, so that `run_slot` can tell which remote it is now.
+fn run_remote(id: u32, conn: u64, link: &Link, remotes: &Remotes) {
     let setup = |remote: &mut Remote| {
         // leds: 0xFF never matches, so the next sync stops the remote's search blinking.
         remote.leds = 0xFF;
@@ -650,7 +716,7 @@ fn run_remote(id: u32, link: &Link, remotes: &Remotes) {
         remotes.lock().unwrap().entry(id).or_default().rumble_until = Some(Instant::now() + Duration::from_millis(150));
         Instant::now()
     };
-    let mut remote = Remote { id, link, remotes, leds: 0xFF, rumble: false, reports: 0, reset: false };
+    let mut remote = Remote { id, conn, link, remotes, leds: 0xFF, rumble: false, reports: 0, reset: false };
     let mut setup_t = setup(&mut remote);
     let mut rate_t = Instant::now();
     let mut last_report = Instant::now();
@@ -673,10 +739,13 @@ fn run_remote(id: u32, link: &Link, remotes: &Remotes) {
             last_report = Instant::now();
         }
         // A DolphinBar doesn't always tell us that a remote left its slot, so a remote that
-        // comes back can look like it never went away, except that it's back in its power-on
-        // mode (buttons only, IR camera off). Set it up again. The wait keeps a remote that won't
-        // take the mode from being set up over and over.
+        // comes back (maybe a different one) can look like it never went away, except that it's
+        // back in its power-on mode (buttons only, IR camera off). Set it up again. The wait keeps
+        // a remote that won't take the mode from being set up over and over.
         if remote.reset && setup_t.elapsed() >= Duration::from_secs(2) {
+            if link.hidraw {
+                return;
+            }
             eprintln!("[wiimote] remote #{id} reset (reconnected?), setting it up again");
             setup_t = setup(&mut remote);
         }
@@ -685,7 +754,7 @@ fn run_remote(id: u32, link: &Link, remotes: &Remotes) {
         }
         if rate_t.elapsed() >= Duration::from_secs(1) {
             rate_t = Instant::now();
-            if let Some(s) = remotes.lock().unwrap().get_mut(&id) {
+            if let Some(s) = remotes.lock().unwrap().get_mut(&id).filter(|s| s.conn == conn) {
                 s.report_rate = remote.reports;
             }
             remote.reports = 0;

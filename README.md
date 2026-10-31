@@ -97,6 +97,10 @@ If a DolphinBar in **mode 4** is plugged in, the game uses it instead of the com
 Bluetooth. The game checks for the bar when it starts, so plug it in before starting the game. Remotes sync with
 the bar: press 1+2 (or SYNC) on a remote, the same as in Dolphin. The bar is also the sensor bar.
 Press the bar's MODE button until the LED for mode 4 lights.
+A remote joins as the player of the bar slot it's in: slot 1 is player 1, slot 2 is player 2, and so on,
+whatever order people press A in. A remote that drops out during a game gets its player back when it
+reconnects, even if the bar puts it in a different slot. The game recognizes each remote by the
+accelerometer calibration stored in it at the factory.
 
 The bar's four HID devices are root-only by default, so it needs a udev rule once:
 

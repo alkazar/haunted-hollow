@@ -152,6 +152,7 @@ impl App {
         let mut out = vec![];
         let remotes = self.wii.poll();
         self.game.dolphinbar = self.wii.dolphinbar();
+        self.game.bar_slots = remotes.iter().filter_map(|r| Some((r.id, r.slot?))).collect();
         let mut dbg = vec![format!("WII REMOTES {}", remotes.len())];
         for r in &remotes {
             use wiimote::*;

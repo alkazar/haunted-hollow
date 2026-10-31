@@ -359,6 +359,9 @@ pub struct Game {
     pub debug_lines: Vec<String>,
     /// Remotes connect through a DolphinBar, so there's no 1+2 hint on the title screen.
     pub dolphinbar: bool,
+    /// (remote id, DolphinBar slot) for remotes on a DolphinBar: a remote joins as the player of
+    /// its bar slot.
+    pub bar_slots: Vec<(u32, usize)>,
     shake: f32,
     /// Every target spawned, when recording for the PS1 export.
     spawn_log: Option<Vec<SpawnRecord>>,
@@ -428,6 +431,7 @@ impl Game {
             debug,
             show_debug: debug,
             dolphinbar: false,
+            bar_slots: vec![],
             vr: false,
             menu_zoom: 1.0,
             title_join_t: None,
@@ -1613,7 +1617,15 @@ impl Game {
                     // The VR rider needs no joining: they are in as soon as the controller is.
                     let vr_rider = self.vr && inp.id == SourceId::Vr;
                     if vr_rider || (matches!(inp.id, SourceId::Wii(_) | SourceId::Vr) && (inp.join || inp.fire_pressed)) {
-                        if let Some(free) = self.players.iter().position(|p| !p.joined && p.source.is_none())
+                        // On a DolphinBar, bar slot N is player N (unless that player is taken).
+                        let bar_slot = match inp.id {
+                            SourceId::Wii(id) => self.bar_slots.iter().find(|&&(i, _)| i == id).map(|&(_, k)| k).filter(|&k| {
+                                k < 4 && !self.players[k].joined && !matches!(self.players[k].source, Some(SourceId::Mouse | SourceId::Bot(_)))
+                            }),
+                            _ => None,
+                        };
+                        if let Some(free) = bar_slot
+                            .or_else(|| self.players.iter().position(|p| !p.joined && p.source.is_none()))
                             .or_else(|| self.players.iter().position(|p| !p.joined))
                         {
                             let p = &mut self.players[free];
