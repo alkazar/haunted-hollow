@@ -106,6 +106,8 @@ const BOSS_COUNT: usize = 8;
 const PORTRAIT_PEEL: f32 = 0.8;
 /// Accuracy bonus for a rider who hits with every shot.
 const MAX_AIM_BONUS: u32 = 5000;
+/// Bonus for every rider when the team pops every enemy it saw.
+const SWEEP_BONUS: u32 = 5000;
 /// Seconds into a guard cycle at which the Pumpkin King's hands are back down.
 const GUARD_END: f32 = 2.15;
 /// Most seconds a target may stay past its life while the cart closes in on it.
@@ -144,6 +146,8 @@ struct Target {
     pos: Vec3,
     scale: f32,
     dead: bool,
+    /// Has been on screen, big enough to shoot (counted in `Game::enemies`).
+    seen: bool,
 }
 
 struct Particle {
@@ -175,6 +179,8 @@ pub struct Player {
     pub shots: u32,
     /// Accuracy bonus, added to `score` when the results come up.
     bonus: u32,
+    /// The team's clean-sweep bonus, likewise.
+    sweep_bonus: u32,
     aim: Vec2,
     aim_target: Vec2,
     aim_visible: bool,
@@ -197,6 +203,7 @@ impl Player {
             hits: 0,
             shots: 0,
             bonus: 0,
+            sweep_bonus: 0,
             aim: Vec2::ZERO,
             aim_target: Vec2::ZERO,
             aim_visible: false,
@@ -214,6 +221,7 @@ impl Player {
         self.hits = 0;
         self.shots = 0;
         self.bonus = 0;
+        self.sweep_bonus = 0;
         self.counts = [0; 9];
     }
 }
@@ -307,6 +315,8 @@ pub struct Game {
     /// How far the boss doors are open (0 shut .. 1 wide open).
     door_open: f32,
     retries: Vec<(f32, Kind, u64, u32)>,
+    /// Enemies (not candy) the riders saw this ride, and how many of them they popped.
+    enemies: (u32, u32),
     high: HighScores,
     high_path: Option<std::path::PathBuf>,
     /// Initials being entered by each rider who made the table this round.
@@ -454,6 +464,7 @@ impl Game {
             clouds: cloud_runs(),
             mist: vec![],
             retries: vec![],
+            enemies: (0, 0),
             high: HighScores::default(),
             high_path: None,
             initials: Default::default(),
@@ -507,6 +518,7 @@ impl Game {
         self.ride_t = 0.0;
         self.targets.clear();
         self.retries.clear();
+        self.enemies = (0, 0);
         self.door_open = 0.0;
         self.particles.clear();
         self.popups.clear();
@@ -1079,6 +1091,7 @@ impl Game {
             pos: base,
             scale: 0.0,
             dead: false,
+            seen: false,
         };
         match kind {
             Kind::Pumpkin | Kind::Skeleton => {
@@ -1213,6 +1226,7 @@ impl Game {
                 pos: a,
                 scale: 0.0,
                 dead: false,
+                seen: false,
             };
             // A bat's full extents don't fit the steep shaft, so check a tighter core.
             let clear = |p: Vec3| {
@@ -1476,13 +1490,18 @@ impl Game {
                 if self.state_t > OUTRO_TIME {
                     self.state = State::Results;
                     self.state_t = 0.0;
+                    let sweep = self.enemies.0 > 0 && self.enemies.1 == self.enemies.0;
                     for p in self.players.iter_mut().filter(|p| p.joined) {
                         p.bonus = accuracy_bonus(p.hits, p.shots);
-                        p.score += p.bonus;
+                        p.sweep_bonus = if sweep { SWEEP_BONUS } else { 0 };
+                        p.score += p.bonus + p.sweep_bonus;
                     }
                 }
             }
             State::Results => {
+                if self.state_t - dt < 0.3 && self.state_t >= 0.3 && self.players.iter().any(|p| p.sweep_bonus > 0) {
+                    self.sfx(Sfx::Bonus, 0.7, 0.0, 1.0);
+                }
                 // A "ding" as each row of the scoreboard appears.
                 let rows = self.joined_count();
                 for rank in 0..rows {
@@ -1547,6 +1566,16 @@ impl Game {
             }
         }
         self.targets.retain(|t| !t.dead);
+        // An enemy counts as seen once it's on screen and big enough to shoot.
+        if matches!(self.state, State::Ride | State::Boss) {
+            let newly: Vec<bool> = self.targets.iter().map(|t| !t.seen && t.kind != Kind::Candy && t.scale >= 0.3 && self.in_view(t.pos)).collect();
+            for (t, n) in self.targets.iter_mut().zip(newly) {
+                if n {
+                    t.seen = true;
+                    self.enemies.0 += 1;
+                }
+            }
+        }
 
         // Particles and popups.
         for p in self.particles.iter_mut() {
@@ -1786,6 +1815,11 @@ impl Game {
         Some((Vec2::new((ndc.x * 0.5 + 0.5) * self.screen.x, (0.5 - ndc.y * 0.5) * self.screen.y), c.w))
     }
 
+    /// The point is somewhere on screen (unlike `on_screen`, edges and panels count).
+    fn in_view(&self, p: Vec3) -> bool {
+        self.project(p).is_some_and(|(sp, _)| sp.x >= 0.0 && sp.y >= 0.0 && sp.x <= self.screen.x && sp.y <= self.screen.y)
+    }
+
     fn pixel_radius(&self, r: f32, w: f32) -> f32 {
         let focal = self.screen.y * 0.5 / (35f32.to_radians()).tan();
         (r * 1.45 * focal / w).max(30.0 * self.screen.y / 720.0)
@@ -1896,6 +1930,11 @@ impl Game {
         }
         if let Some((ti, _)) = best {
             let t = self.targets.remove(ti);
+            if t.kind != Kind::Candy {
+                // A shot can land the same frame the enemy first comes into view.
+                self.enemies.0 += !t.seen as u32;
+                self.enemies.1 += 1;
+            }
             let pts = t.kind.points();
             let p = &mut self.players[pi];
             p.score += pts;
@@ -2749,9 +2788,22 @@ impl Game {
         ui.text_fit("WHAT A SPOOKTACULAR RIDE!", w * 0.5, h * 0.07, 2.6, w * 0.92, [1.0, 0.55, 0.08, 1.0], Align::Center);
         let mut order: Vec<usize> = (0..4).filter(|&i| self.players[i].joined).collect();
         order.sort_by(|a, b| self.players[*b].score.cmp(&self.players[*a].score));
+        // How many of the enemies the team saw it popped, and the bonus for getting them all.
+        if self.state_t > 0.2 {
+            let (seen, popped) = self.enemies;
+            let a = smooth((self.state_t - 0.2) / 0.3);
+            let (msg, c) = if seen > 0 && popped == seen {
+                let k = 0.8 + 0.2 * (self.state_t * 6.0).sin();
+                (format!("ALL {seen} ENEMIES POPPED!  +{SWEEP_BONUS} TEAM BONUS"), [1.0, 0.85 * k, 0.3 * k, a])
+            } else {
+                (format!("ENEMIES POPPED: {popped} OF {seen}"), [0.85, 0.85, 0.95, a])
+            };
+            ui.text_fit(&msg, w * 0.5, h * 0.17, 1.0, w * 0.9, c, Align::Center);
+        }
         let medal = [("1ST", [1.0, 0.82, 0.2]), ("2ND", [0.8, 0.82, 0.9]), ("3RD", [0.85, 0.55, 0.3]), ("4TH", [0.6, 0.6, 0.7])];
-        let top = h * 0.2;
-        let avail = h * 0.66;
+        // Room above the first card for the team line and a "NEW HIGH SCORE!" tag on its edge.
+        let top = h * 0.25;
+        let avail = h * 0.61;
         let gap = 5.0 * unit;
         let row_h = ((avail - gap * 3.0) / 4.0).min(36.0 * unit);
         let rw = (w * 0.86).min(row_h * 9.0);
@@ -2783,10 +2835,12 @@ impl Game {
             let asc = (line * 0.22).min(col_name / ui.text_width(award, 1.0));
             ui.text(award, nx, y + row_h * 0.6, asc, [1.0, 1.0, 1.0, appear], Align::Left);
             let rx = x + rw - pad;
-            // The accuracy bonus pops up beside the score, which then counts up to include it.
+            // The accuracy bonus pops up beside the score, which then counts up to include it
+            // (and the team bonus, shown above the cards).
             let row_t = self.state_t - 0.4 * (order.len() - rank) as f32;
             let tally = smooth((row_t - 0.8) / 0.8);
-            let score = format!("{}", p.score - p.bonus + (p.bonus as f32 * tally) as u32);
+            let bonus = p.bonus + p.sweep_bonus;
+            let score = format!("{}", p.score - bonus + (bonus as f32 * tally) as u32);
             let ss = (line * 0.36).min(col_score / ui.text_width(&score, 1.0));
             ui.text(&score, rx, y + row_h * 0.12, ss, [1.0, 1.0, 1.0, appear], Align::Right);
             if p.bonus > 0 && row_t > 0.5 {
@@ -3133,6 +3187,25 @@ mod tests {
         g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
         g.update(0.016, &[wii(0, false), wii(1, true)], screen, None);
         assert_eq!(g.joined_count(), 1);
+    }
+
+    #[test]
+    fn popping_every_enemy_gives_the_whole_team_a_bonus() {
+        let screen = Vec2::new(1280.0, 720.0);
+        for (enemies, bonus) in [((40, 40), SWEEP_BONUS), ((40, 39), 0)] {
+            let track = Track::new();
+            let world = crate::world::generate(&track);
+            let mut g = Game::new(track, world, false, 0);
+            g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
+            g.enemies = enemies;
+            g.state = State::Outro;
+            g.state_t = OUTRO_TIME;
+            g.update(0.016, &[wii(0, false), wii(1, false)], screen, None);
+            assert_eq!(g.state, State::Results);
+            for p in &g.players[..2] {
+                assert_eq!((p.sweep_bonus, p.score), (bonus, bonus), "after popping {enemies:?}");
+            }
+        }
     }
 
     #[test]
