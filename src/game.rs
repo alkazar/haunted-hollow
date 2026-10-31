@@ -2857,13 +2857,13 @@ impl Game {
             // A flashing tag across the top edge of the card for a new high score.
             if made_it.contains(&i) {
                 let tag = "NEW HIGH SCORE!";
-                let ts = (line * 0.16).max(0.6);
-                let (tw, th) = (ui.text_width(tag, ts) + 8.0 * unit, 8.0 * ts * unit + 4.0 * unit);
+                let ts = (line * 0.14).max(0.55);
+                let (tw, th) = (ui.text_width(tag, ts) + 8.0 * unit, 8.0 * ts * unit + 2.0 * unit);
                 let tx = x + rw * 0.5 - tw * 0.5;
                 let ty = y - th * 0.5;
                 let k = 0.75 + 0.25 * (self.state_t * 6.0).sin();
                 ui.panel(tx, ty, tw, th, [1.0 * k, 0.5 * k, 0.05, appear], [1.0, 0.9, 0.4, appear]);
-                ui.text(tag, x + rw * 0.5, ty + 2.0 * unit, ts, [1.0, 1.0, 1.0, appear], Align::Center);
+                ui.text(tag, x + rw * 0.5, ty + unit, ts, [1.0, 1.0, 1.0, appear], Align::Center);
             }
         }
         if self.state_t > 4.0 && (self.state_t * 2.0) as i32 % 2 == 0 {
