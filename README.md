@@ -86,6 +86,7 @@ With the game running, press **1** and **2** on the remote together. Its four LE
 it's looking for the game; when it connects all four light up steadily and it gives a short
 buzz. Then press **A** to join, and only your player's LED stays lit. Connect up to four remotes this way, at any time (also mid-ride).
 Remotes don't stay paired: after the game quits (or a remote turns off), press 1+2 again.
+A remote with no button pressed for 30 seconds is turned off to save its batteries.
 
 The game talks to the remotes directly over Bluetooth, so the `hid-wiimote` kernel driver,
 udev rules and controller remappers like InputPlumber don't get involved. It only needs
@@ -102,15 +103,21 @@ whatever order people press A in. A remote that drops out during a game gets its
 reconnects, even if the bar puts it in a different slot. The game recognizes each remote by the
 accelerometer calibration stored in it at the factory.
 
-The bar's four HID devices are root-only by default, so it needs a udev rule once:
+The bar's four HID devices are root-only by default, so it needs udev rules once. This installs
+them (and replaces old ones) in `/etc/udev/rules.d/60-dolphinbar.rules`:
 
 ```sh
-echo 'KERNEL=="hidraw*", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="0306", MODE="0660", TAG+="uaccess"' \
-  | sudo tee /etc/udev/rules.d/60-dolphinbar.rules
-sudo udevadm control --reload && sudo udevadm trigger
+./dolphinbar-udev.sh
 ```
 
-Without it the game logs `can't open the DolphinBar ... Permission denied`.
+Without them the game logs `can't open the DolphinBar ... Permission denied`.
+
+The bar can't drop a single remote, so once no button has been pressed on any of its remotes for
+30 seconds, the game turns them all off by switching the bar's USB port off for 3 seconds. The
+second of the udev rules lets the game switch that port (any local user can then switch it).
+Without it the game logs `can't power-cycle the DolphinBar` and the remotes stay on. It only works
+if the USB hub switches power per port, so plug the bar into one that does (it worked through
+the hub the bar was tested on).
 
 **2. Set up the sensor bar**
 

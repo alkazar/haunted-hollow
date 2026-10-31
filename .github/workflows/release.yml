@@ -40,7 +40,7 @@ jobs:
           mkdir -p "dist/${name}"
           strip target/release/haunted_hollow
           cp target/release/haunted_hollow "dist/${name}/haunted-hollow"
-          cp README.md LICENSE "dist/${name}/"
+          cp README.md LICENSE dolphinbar-udev.sh "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS
 

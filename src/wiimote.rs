@@ -48,6 +48,10 @@ const BUTTON_MAP: [(u16, u32); 7] = [
 ];
 
 const MAX_REMOTES: usize = 4;
+/// A remote with no button held for this long is turned off to save its batteries: on Bluetooth
+/// by dropping its connection, on a DolphinBar (which can't drop one remote) by power-cycling the
+/// bar once all its remotes are idle.
+const IDLE_OFF: Duration = Duration::from_secs(30);
 const PSM_CTRL: u16 = 0x11;
 const PSM_INTR: u16 = 0x13;
 const AF_BLUETOOTH: i32 = 31;
@@ -68,6 +72,8 @@ struct Shared {
     leds: u8,
     rumble_until: Option<Instant>,
     report_rate: u32,
+    /// No button held for `IDLE_OFF`.
+    idle: bool,
 }
 
 /// Per-remote snapshot handed to the game.
@@ -263,6 +269,7 @@ fn dolphinbar_session(remotes: &Remotes) -> ! {
     let mut warned = false;
     let mut plugged = true;
     let known: Known = Arc::new(Mutex::new(HashMap::new()));
+    let mut can_power_cycle = true;
     loop {
         let slots = dolphinbar_slots();
         if slots.is_empty() == plugged {
@@ -288,8 +295,48 @@ fn dolphinbar_session(remotes: &Remotes) -> ! {
                 threads.insert(phys, t);
             }
         }
+        let all_idle = {
+            let map = remotes.lock().unwrap();
+            let on: Vec<&Shared> = map.values().filter(|s| s.connected).collect();
+            !on.is_empty() && on.iter().all(|s| s.idle)
+        };
+        if all_idle && can_power_cycle {
+            eprintln!("[wiimote] no buttons pressed for {}s, power-cycling the DolphinBar to turn its remotes off", IDLE_OFF.as_secs());
+            if let Err(e) = power_cycle_dolphinbar() {
+                eprintln!("[wiimote] can't power-cycle the DolphinBar ({e}), so its remotes stay on; see README for the udev rule");
+                can_power_cycle = false;
+            }
+        }
         thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// Cuts power to the DolphinBar's USB port for a moment, which drops all its remotes (they turn
+/// off). Its slot threads then stop, and `dolphinbar_session` picks the bar up again when it's back.
+fn power_cycle_dolphinbar() -> std::io::Result<()> {
+    let bar = std::fs::read_dir("/sys/bus/usb/devices")?
+        .flatten()
+        .map(|e| e.path())
+        .find(|d| {
+            let attr = |k: &str| std::fs::read_to_string(d.join(k)).unwrap_or_default();
+            attr("idVendor").trim() == "057e" && attr("idProduct").trim() == "0306"
+        })
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))?;
+    // The hub port's `disable` clears the port's power (if the hub switches ports separately).
+    // Resolve it first: `bar` (and its `port` link) goes away as soon as the bar loses power.
+    let disable = std::fs::canonicalize(bar.join("port"))?.join("disable");
+    std::fs::write(&disable, "1")?;
+    thread::sleep(Duration::from_secs(3));
+    // Turning it back on must not fail for good, or the bar stays off until it's replugged.
+    let mut result = Ok(());
+    for _ in 0..5 {
+        result = std::fs::write(&disable, "0");
+        if result.is_ok() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    result
 }
 
 /// Remote ids by factory accelerometer calibration, for remotes seen on the DolphinBar.
@@ -590,6 +637,8 @@ struct Remote<'a> {
     reports: u32,
     /// Set by a buttons-only report (0x30), which is what a remote sends after it powers up.
     reset: bool,
+    /// When a button was last held, for `IDLE_OFF`.
+    last_press: Instant,
 }
 
 impl Remote<'_> {
@@ -680,6 +729,9 @@ impl Remote<'_> {
             let b = BUTTON_MAP.iter().filter(|(m, _)| raw & m != 0).fold(0, |acc, (_, bit)| acc | bit);
             s.pressed |= b & !s.buttons;
             s.buttons = b;
+            if b != 0 {
+                self.last_press = Instant::now();
+            }
         }
         match id {
             0x20 => {
@@ -716,7 +768,7 @@ fn run_remote(id: u32, conn: u64, link: &Link, remotes: &Remotes) {
         remotes.lock().unwrap().entry(id).or_default().rumble_until = Some(Instant::now() + Duration::from_millis(150));
         Instant::now()
     };
-    let mut remote = Remote { id, conn, link, remotes, leds: 0xFF, rumble: false, reports: 0, reset: false };
+    let mut remote = Remote { id, conn, link, remotes, leds: 0xFF, rumble: false, reports: 0, reset: false, last_press: Instant::now() };
     let mut setup_t = setup(&mut remote);
     let mut rate_t = Instant::now();
     let mut last_report = Instant::now();
@@ -752,10 +804,18 @@ fn run_remote(id: u32, conn: u64, link: &Link, remotes: &Remotes) {
         if remote.sync_outputs().is_err() {
             return;
         }
+        // A remote turns itself off when its Bluetooth connection drops, so returning (which
+        // closes the L2CAP channels) switches it off. A DolphinBar has no way to drop one remote;
+        // `dolphinbar_session` handles that through `Shared::idle`.
+        if !link.hidraw && remote.last_press.elapsed() >= IDLE_OFF {
+            eprintln!("[wiimote] remote #{id}: no buttons pressed for {}s, turning it off", IDLE_OFF.as_secs());
+            return;
+        }
         if rate_t.elapsed() >= Duration::from_secs(1) {
             rate_t = Instant::now();
             if let Some(s) = remotes.lock().unwrap().get_mut(&id).filter(|s| s.conn == conn) {
                 s.report_rate = remote.reports;
+                s.idle = remote.last_press.elapsed() >= IDLE_OFF;
             }
             remote.reports = 0;
         }
