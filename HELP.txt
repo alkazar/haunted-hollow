@@ -1,4 +1,4 @@
-HAUNTED HOLLOW - a spooky coaster shooter for 1-4 players
+HAUNTED HOLLOW - a spooky (or merry) coaster shooter for 1-4 players
 
 USAGE: haunted_hollow [OPTIONS]
 
@@ -6,6 +6,7 @@ USAGE: haunted_hollow [OPTIONS]
                        Mouse = player 1, keys 1-4 switch which player the mouse is.
                        Left click shoots, Enter / right click starts, B skips to the
                        boss, hold Tab to fast-forward, P pauses, F3 toggles info.
+  --level NAME         Which ride: halloween (default) or christmas
   --windowed           Run in a window      --fullscreen   Run fullscreen (default)
   --size WxH           Window size (default 1280x720)
   --bots N             Add N computer players who play by themselves (attract/demo)
@@ -18,7 +19,7 @@ USAGE: haunted_hollow [OPTIONS]
   --dump-audio DIR     Write all music and sound effects as WAV files and exit
                        (sound uses ALSA; set HAUNTED_ALSA_DEVICE to pick a device)
   --export-ps1 DIR     Write the data for the PlayStation version and exit
-                       (ps1/build.sh does this for you)
+                       (ps1/build.sh does this for you; the consoles have Halloween only)
   --export-wii DIR     Write the data for the Wii version and exit
                        (wii/build.sh does this for you)
   --version, -V        Print the version and exit

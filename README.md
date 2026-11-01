@@ -30,6 +30,25 @@ through them, down a lantern-lit hall that fades away into darkness, to the scor
 Nobody can lose: there is no health and no game over, just a score per player and a fun
 award on the results screen ("GHOST CATCHER", "BAT BOPPER", "BOSS BUSTER"...).
 
+### Levels
+
+`--level` picks the ride (Halloween is the default):
+
+| Level | |
+|---|---|
+| `--level halloween` | **Haunted Hollow**: everything described above. |
+| `--level christmas` | **Holly Hollow**: a ride of its own, on its own track through its own world. It leaves a station deep in a snowy pine forest, crosses a frozen creek on a little bridge and runs down the main street of Winterberry village (strung with lights, with a great tree in the town square). A lift hill climbs onto the rooftops, past Santa's parked sleigh, and the cart dives down the giant chimney of the toy factory. It winds through the factory's conveyor belts and shelves of toys, curves out across the frozen lake round an island with a lit-up tree, and plunges through a crack in the ice into a crystal cavern. It ends in the **Snow King**'s throne room. Riders pop snowmen, gingerbread men, toy planes, flying presents, nutcrackers, dangling ornaments and wreaths, and grab the golden star. The music is Christmas carols (Jingle Bells, Deck the Halls, God Rest Ye Merry Gentlemen, We Wish You a Merry Christmas, Joy to the World), and snow falls wherever the sky is open. |
+
+Each level keeps its own high-score table. The rules are the same in both (the 120 second
+ride, then the boss, then the doors and the score screen). A level is:
+
+* its track (control points in `src/track.rs`),
+* its world, built around that track (`src/world/<level>.rs`), and how big a box of blocks it
+  needs, where its boss rises and where his doors stand (`src/level.rs`),
+* its sections, each with a name, fog and whether it's out under the sky (`Theme` in
+  `src/level.rs`), and which targets come in each (`Game::sections`),
+* its models (`Models::new`) and songs (`Bank::build`).
+
 * Ride: exactly **120 seconds** from the station to the boss (the track's speed profile is
   normalised to that), then the boss fight lasts as long as it takes (~15–40 s depending on skill
   and player count; his health scales with the number of players).
@@ -70,6 +89,7 @@ Shaders are WGSL compiled to SPIR-V at build time by `naga`, so no `glslc` is ne
 cargo build --release
 ./target/release/haunted_hollow            # fullscreen, Wii Remotes
 ./target/release/haunted_hollow --debug    # windowed, play with the mouse
+./target/release/haunted_hollow --level christmas
 ./target/release/haunted_hollow --help
 ```
 
@@ -158,8 +178,8 @@ Remotes rumble when you pop something.
 letters of their initials (up to three) on a big letter grid, then **END** (**DEL** removes a
 letter). Anyone who hasn't finished after 45 s keeps what they shot, or goes in as P1–P4. The
 table is then shown before the title, and the best score is shown on the title screen. It's
-saved in `~/.local/share/haunted-hollow/highscores.txt` (or under `$XDG_DATA_HOME`); delete
-that file to reset it. Computer players (`--bots`) never enter the table.
+saved in `~/.local/share/haunted-hollow/highscores.txt` (or under `$XDG_DATA_HOME`), and the
+Christmas level's in `highscores-christmas.txt` next to it; delete a file to reset its table. Computer players (`--bots`) never enter the table.
 
 **Pointer calibration** (if the crosshair moves the wrong way or doesn't reach the edges):
 `--wii-flip-x`, `--wii-flip-y`, `--wii-gain 1.6`, `--wii-y-offset -0.1` (for a bar below the TV).
@@ -227,7 +247,9 @@ frame/upload.sh --run        # or: frame/upload.sh <hostname or IP> --run
 
 It builds, pairs on first use (confirm on the headset), uploads with rsync over ssh, adds
 the game to the headset's library as "Devkit Game: HauntedHollow" and, with `--run`,
-starts it. It does what the SteamOS Devkit Client's Title Upload does, with the same key
+starts it. `frame/upload.sh --level christmas --run` installs the Christmas level the same way,
+as a second game in the library ("Devkit Game: HollyHollow") that starts with
+`--level christmas`. It does what the SteamOS Devkit Client's Title Upload does, with the same key
 (`~/.config/steamos-devkit/devkit_rsa`) and Valve's helper scripts. `--no-build` uploads
 the last build, and `FRAME_RUNTIME=SteamLinuxRuntime_sniper-arm64` (for example) picks a
 different runtime than the default `SteamLinuxRuntime_4-arm64`.
@@ -242,6 +264,8 @@ The official client works too: Title Upload with **Local Folder**
 and an ARM64 Steam Linux Runtime.
 
 ## PlayStation version
+
+The console versions below have the Halloween level only.
 
 `ps1/` is a port to the original PlayStation, for **1–2 players with Namco GunCon light guns**
 (or ordinary pads). It rides through the same world, with the same targets popping up at the
@@ -364,9 +388,11 @@ themselves: `CMAKE_ARGS=-DHH_BOTS=2 wii/build.sh` (or `ps1/build.sh`).
 | `src/xr.rs` | VR mode: OpenXR session, head pose inside the cart, controller aiming, the HUD's virtual screen |
 | `shaders/*.wgsl` | World shader (baked light, rider's lantern, fog) and HUD shader |
 | `src/atlas.rs` | Procedural Minecraft-style block textures + 8×8 pixel font |
-| `src/world.rs` | Voxel world generation, RGB flood-fill lighting + moonlight, meshing with AO |
-| `src/track.rs` | Coaster spline, speed profile normalised to a 120 s ride, banking |
-| `src/mesh.rs` | Voxel models: ghost, bat, pumpkin, skeleton, spider, books, candy, Pumpkin King, boss doors |
+| `src/level.rs` | The levels (`--level`): each one's sections, words, colours, size, boss and door positions |
+| `src/world/mod.rs` | Voxel world: blocks, RGB flood-fill lighting + moonlight, meshing with AO, the ride's tunnel |
+| `src/world/halloween.rs`, `christmas.rs` | Each level's world, built around its track |
+| `src/track.rs` | Each level's coaster spline, speed profile normalised to a 120 s ride, banking |
+| `src/mesh.rs` | Voxel models: ghost, bat, pumpkin, skeleton, spider, books, candy, Pumpkin King, boss doors; and the Christmas ones |
 | `src/game.rs` | Spawning, behaviours, hit testing, scoring, boss, title/results screens |
 | `src/synth.rs` | Tiny synthesizer: instruments, drums, the songs and every sound effect |
 | `src/audio.rs` | Real-time mixer thread, crossfading music, ALSA output via dlopen |

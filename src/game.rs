@@ -1,15 +1,17 @@
-//! Gameplay: the ride, spooky targets, the Pumpkin King, scoring and all screens.
-//! No one can lose: targets just pop into candy and every player earns a score.
+//! Gameplay: the ride, the targets, the boss, scoring and all screens, for every level
+//! (`Kind` names the Halloween targets; the Christmas level dresses them up differently).
+//! No one can lose: targets just pop into confetti and every player earns a score.
 
 use crate::atlas::*;
 use crate::audio::{Music, Sfx, SoundEvent};
 use crate::highscores::{HighScores, MAX_INITIALS};
 use crate::hud::{Align, Ui};
+use crate::level::{Level, Theme};
 use crate::mesh::{hash3, push_box, push_box_tiles, push_quad, Models, FACES};
 use crate::rng::Rng;
 use crate::track::{Track, RIDE_SECONDS};
 use crate::vk::Vertex;
-use crate::world::{zone_at, World, Zone, DOOR_FLOOR, DOOR_HALF, DOOR_Z};
+use crate::world::{zone_at, World, Zone, DOOR_HALF};
 use glam::{Mat4, Vec2, Vec3, Vec4Swizzles};
 
 pub const PLAYER_COLORS: [[f32; 3]; 4] = [[1.0, 0.28, 0.28], [0.3, 0.6, 1.0], [0.35, 0.95, 0.4], [1.0, 0.86, 0.2]];
@@ -39,16 +41,26 @@ pub struct SourceInput {
     pub quit_to_title: bool,
 }
 
+/// What a target does. Each is drawn as something different in the Christmas level
+/// (in brackets).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    /// Stands on the ground (a snowman).
     Pumpkin,
+    /// Floats about (a gingerbread man).
     Ghost,
+    /// Flies past (a toy plane).
     Bat,
+    /// Flutters round the library (a present, round the toy workshop).
     Book,
+    /// Stands and waves (a nutcracker).
     Skeleton,
+    /// Dangles from the ceiling (a Christmas ornament).
     Spider,
+    /// The golden bonus (a golden star).
     Candy,
-    /// A haunted painting that peels off a wall of the house and floats at the riders.
+    /// A haunted painting that peels off a wall of the house and floats at the riders
+    /// (a wreath).
     Portrait,
 }
 
@@ -83,20 +95,6 @@ impl Kind {
         }
     }
 }
-
-/// Award per enemy kind (in `Kind` order), then the boss, then the fallback.
-const AWARDS: [&str; 10] = [
-    "PUMPKIN POPPER",
-    "GHOST CATCHER",
-    "BAT BOPPER",
-    "BOOKWORM",
-    "BONE BONKER",
-    "SPIDER SPOTTER",
-    "CANDY CHAMP",
-    "ART CRITIC",
-    "BOSS BUSTER",
-    "SPOOKY STAR",
-];
 
 /// Bats in each batch of the swarm on the big drop.
 const SWARM_BATCH: usize = 3;
@@ -300,6 +298,8 @@ pub struct FrameOut {
 }
 
 pub struct Game {
+    pub level: Level,
+    theme: &'static Theme,
     pub sounds: Vec<SoundEvent>,
     last_spawn_sound: [f32; 8],
     pub spawn_stats: (u32, u32),
@@ -392,31 +392,12 @@ fn smooth(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn zone_name(z: Zone) -> &'static str {
-    match z {
-        Zone::Graveyard => "THE GRAVEYARD",
-        Zone::Foyer => "THE GRAND FOYER",
-        Zone::Library => "THE HAUNTED LIBRARY",
-        Zone::Dining => "THE DINING HALL",
-        Zone::Drop => "HOLD ON TIGHT!",
-        Zone::Crypt => "THE CREEPY CRYPT",
-        Zone::Lair => "THE PUMPKIN KING'S LAIR",
-    }
-}
-
-fn zone_fog(z: Zone) -> ([f32; 3], (f32, f32), f32) {
-    match z {
-        Zone::Graveyard => ([0.07, 0.06, 0.15], (30.0, 130.0), 0.5),
-        Zone::Foyer | Zone::Library | Zone::Dining => ([0.04, 0.03, 0.06], (18.0, 64.0), 0.95),
-        Zone::Drop => ([0.02, 0.04, 0.03], (10.0, 44.0), 0.9),
-        Zone::Crypt => ([0.03, 0.06, 0.05], (14.0, 50.0), 0.9),
-        Zone::Lair => ([0.015, 0.005, 0.025], (24.0, 80.0), 0.45),
-    }
-}
-
 impl Game {
-    pub fn new(track: Track, world: World, debug: bool, bots: u32) -> Game {
+    pub fn new(track: Track, world: World, level: Level, debug: bool, bots: u32) -> Game {
+        let theme = level.theme();
         let mut g = Game {
+            level,
+            theme,
             state: State::Title,
             players: std::array::from_fn(|_| Player::new()),
             state_t: 0.0,
@@ -424,7 +405,7 @@ impl Game {
             total_t: 0.0,
             track,
             world,
-            models: Models::new(),
+            models: Models::new(level),
             targets: vec![],
             particles: vec![],
             popups: vec![],
@@ -432,10 +413,10 @@ impl Game {
             next_spawn: 0,
             boss: None,
             rng: Rng::new(7),
-            zone: Zone::Graveyard,
+            zone: Zone(0),
             banner: (String::new(), 99.0),
-            fog: zone_fog(Zone::Graveyard).0,
-            fog_range: zone_fog(Zone::Graveyard).1,
+            fog: theme.zone_fog(Zone(0)).0,
+            fog_range: theme.zone_fog(Zone(0)).1,
             lamp: 0.35,
             viewproj: Mat4::IDENTITY,
             cam: Vec3::ZERO,
@@ -478,7 +459,7 @@ impl Game {
         };
         g.fires = g.world.cells_of(crate::world::b::FIRE);
         g.cauldrons = g.world.cells_of(crate::world::b::CAULDRON);
-        g.mist = mist_puffs(&g.track);
+        g.mist = mist_puffs(&g.track, level);
         for k in 0..bots.min(4) {
             g.players[k as usize].joined = true;
             g.players[k as usize].source = Some(SourceId::Bot(k));
@@ -525,8 +506,8 @@ impl Game {
         self.particles.clear();
         self.popups.clear();
         self.boss = None;
-        self.zone = Zone::Graveyard;
-        self.banner = (zone_name(Zone::Graveyard).into(), -2.5);
+        self.zone = Zone(0);
+        self.banner = (self.theme.zone_name(Zone(0)).into(), -2.5);
         for p in self.players.iter_mut() {
             p.reset_score();
         }
@@ -676,31 +657,61 @@ impl Game {
         }
     }
 
+    /// Each section's targets: (from, until, kinds and how often each comes, density),
+    /// one per zone in order; and when the swarm of fliers bursts up the big drop.
+    #[allow(clippy::type_complexity)]
+    fn sections(&self) -> (Vec<(f32, f32, Vec<(Kind, u32)>, f32)>, f32) {
+        let tr = &self.track;
+        use Kind::*;
+        match self.level {
+            Level::Halloween => {
+                let t_foyer = tr.time_at_z(39.5);
+                let t_lib = tr.time_at_z(70.5);
+                let t_din = tr.time_at_z(100.5);
+                let t_drop = tr.time_at_z(127.5);
+                let t_crypt = tr.time_at_z(140.0);
+                let t_lair = tr.time_at_z(176.5);
+                let sections = vec![
+                    (3.4, t_foyer - 1.2, vec![(Pumpkin, 5), (Bat, 3), (Ghost, 1)], 1.0),
+                    (t_foyer + 0.3, t_lib - 0.6, vec![(Ghost, 2), (Portrait, 3), (Spider, 2), (Bat, 2)], 1.0),
+                    (t_lib + 0.3, t_din - 0.6, vec![(Book, 8), (Portrait, 4), (Ghost, 1), (Bat, 4)], 1.0),
+                    (t_din + 0.3, t_drop - 0.3, vec![(Skeleton, 5), (Portrait, 2), (Ghost, 2), (Bat, 1)], 1.0),
+                    (t_drop + 0.2, t_crypt - 0.3, vec![(Bat, 1)], 0.6),
+                    (t_crypt + 0.2, t_lair - 0.4, vec![(Spider, 5), (Skeleton, 3), (Ghost, 3), (Bat, 2)], 1.0),
+                    (t_lair, RIDE_SECONDS - 3.0, vec![(Pumpkin, 3), (Bat, 2)], 1.0),
+                ];
+                (sections, t_drop)
+            }
+            Level::Christmas => {
+                let t = |z: Zone| tr.section_time(z);
+                let sections = vec![
+                    // (Snowmen and nutcrackers need ground near the rails, so none up on
+                    // the rooftops or on the factory's raised track.)
+                    (3.4, t(Zone::VILLAGE) - 0.8, vec![(Pumpkin, 5), (Bat, 3), (Ghost, 1)], 1.0),
+                    (t(Zone::VILLAGE) + 0.3, t(Zone::ROOFTOPS) - 0.4, vec![(Pumpkin, 3), (Skeleton, 4), (Portrait, 3), (Ghost, 1), (Bat, 2)], 1.0),
+                    (t(Zone::ROOFTOPS) + 0.3, t(Zone::CHIMNEY) - 0.6, vec![(Bat, 4), (Ghost, 2)], 1.0),
+                    (t(Zone::CHIMNEY) + 0.2, t(Zone::FACTORY) - 0.3, vec![(Bat, 1)], 0.6),
+                    (t(Zone::FACTORY) + 0.3, t(Zone::LAKE) - 0.6, vec![(Book, 8), (Portrait, 4), (Spider, 3), (Ghost, 1)], 1.0),
+                    (t(Zone::LAKE) + 0.3, t(Zone::PLUNGE) - 0.3, vec![(Pumpkin, 5), (Skeleton, 3), (Bat, 3), (Ghost, 1)], 1.0),
+                    (t(Zone::PLUNGE) + 0.2, t(Zone::CAVERN) - 0.3, vec![(Bat, 1)], 0.6),
+                    (t(Zone::CAVERN) + 0.2, t(Zone::THRONE) - 0.4, vec![(Spider, 5), (Skeleton, 2), (Ghost, 2), (Bat, 2)], 1.0),
+                    (t(Zone::THRONE), RIDE_SECONDS - 3.0, vec![(Pumpkin, 3), (Bat, 2)], 1.0),
+                ];
+                (sections, t(Zone::CHIMNEY))
+            }
+        }
+    }
+
     fn build_schedule(&mut self) {
         let n = self.joined_count().max(1) as f32;
-        let tr = &self.track;
-        let t_foyer = tr.time_at_z(39.5);
-        let t_lib = tr.time_at_z(70.5);
-        let t_din = tr.time_at_z(100.5);
-        let t_drop = tr.time_at_z(127.5);
-        let t_crypt = tr.time_at_z(140.0);
-        let t_lair = tr.time_at_z(176.5);
         use Kind::*;
-        let sections: Vec<(f32, f32, Vec<(Kind, u32)>, f32)> = vec![
-            (3.4, t_foyer - 1.2, vec![(Pumpkin, 5), (Bat, 3), (Ghost, 1)], 1.0),
-            (t_foyer + 0.3, t_lib - 0.6, vec![(Ghost, 2), (Portrait, 3), (Spider, 2), (Bat, 2)], 1.0),
-            (t_lib + 0.3, t_din - 0.6, vec![(Book, 8), (Portrait, 4), (Ghost, 1), (Bat, 4)], 1.0),
-            (t_din + 0.3, t_drop - 0.3, vec![(Skeleton, 5), (Portrait, 2), (Ghost, 2), (Bat, 1)], 1.0),
-            (t_drop + 0.2, t_crypt - 0.3, vec![(Bat, 1)], 0.6),
-            (t_crypt + 0.2, t_lair - 0.4, vec![(Spider, 5), (Skeleton, 3), (Ghost, 3), (Bat, 2)], 1.0),
-            (t_lair, RIDE_SECONDS - 3.0, vec![(Pumpkin, 3), (Bat, 2)], 1.0),
-        ];
+        let (sections, t_drop) = self.sections();
         let mut rng = Rng::new(4242);
         let mut spawns = vec![];
         // Scheduled a bit denser than v2 (1.25 s) so that ~25% more targets actually
         // appear once spots that aren't clearly visible are skipped.
         let interval = 0.84 / (1.0 + 0.32 * (n - 1.0));
-        let zones = [Zone::Graveyard, Zone::Foyer, Zone::Library, Zone::Dining, Zone::Drop, Zone::Crypt, Zone::Lair];
+        let n_zones = sections.len();
         for (si, (t0, t1, pool, density)) in sections.into_iter().enumerate() {
             if t1 <= t0 {
                 continue;
@@ -719,7 +730,7 @@ impl Game {
                 }
                 // There were too many ghosts: one in five becomes a different enemy.
                 if kind == Ghost && rng.chance(0.2) {
-                    kind = Self::ghost_substitute(zones[si.min(zones.len() - 1)], &mut rng);
+                    kind = Self::ghost_substitute(self.level, Zone(si.min(n_zones - 1) as u8), &mut rng);
                 }
                 let side = rng.sign();
                 spawns.push(Spawn { t, kind, seed: rng.next_u32() as u64, side, swarm: false });
@@ -800,8 +811,9 @@ impl Game {
             self.pose_at(d, speed)
         } else {
             let (eye, dir, up) = self.pose_at(self.track.stop_dist, 0.0);
-            let boss = self.boss.as_ref().map(|b| b.pos).unwrap_or(Vec3::new(0.0, -9.5, 200.0));
-            let to = (Vec3::new(boss.x * 0.5, -9.5, boss.z) - eye).normalize_or_zero();
+            let home = self.level.boss_home();
+            let boss = self.boss.as_ref().map(|b| b.pos).unwrap_or(home + Vec3::Y * 16.5);
+            let to = (Vec3::new(home.x + (boss.x - home.x) * 0.5, home.y + 16.5, boss.z) - eye).normalize_or_zero();
             (eye, dir.lerp(to, 0.3).normalize(), up)
         };
         let right = dir.cross(up).normalize_or_zero();
@@ -908,6 +920,38 @@ impl Game {
         }
     }
 
+    /// Which part of the ride a point is in.
+    fn zone_of(&self, p: Vec3) -> Zone {
+        match self.level {
+            Level::Halloween => zone_at(p),
+            _ => self.track.zone_near(p),
+        }
+    }
+
+    /// Which part of the ride the cart is in, `d` along the track at `p`.
+    fn zone_on_ride(&self, d: f32, p: Vec3) -> Zone {
+        match self.level {
+            Level::Halloween => zone_at(p),
+            _ => self.track.zone_at_dist(d),
+        }
+    }
+
+    /// Paintings (wreaths) come off the walls here.
+    fn walls_zone(&self, z: Zone) -> bool {
+        match self.level {
+            Level::Halloween => matches!(z, Zone::FOYER | Zone::LIBRARY | Zone::DINING),
+            Level::Christmas => matches!(z, Zone::VILLAGE | Zone::FACTORY),
+        }
+    }
+
+    /// Where the books (presents) fly about, and never leave.
+    fn books_zone(&self) -> Zone {
+        match self.level {
+            Level::Halloween => Zone::LIBRARY,
+            Level::Christmas => Zone::FACTORY,
+        }
+    }
+
     /// Screen "lanes" new targets are steered toward, so they spread across the
     /// screen instead of bunching in the middle.
     const LANES: [f32; 10] = [-0.6, 0.55, -0.2, 0.3, 0.72, -0.45, 0.05, 0.45, -0.72, -0.05];
@@ -917,14 +961,20 @@ impl Game {
     /// and spread out across the screen. Candidates are tested against the camera's
     /// predicted path.
     /// Something other than a ghost that suits the current part of the ride.
-    fn ghost_substitute(zone: Zone, rng: &mut Rng) -> Kind {
-        let pool: &[Kind] = match zone {
-            Zone::Graveyard => &[Kind::Bat, Kind::Pumpkin],
-            Zone::Foyer => &[Kind::Bat, Kind::Spider, Kind::Portrait],
-            Zone::Library => &[Kind::Book, Kind::Bat, Kind::Spider, Kind::Portrait],
-            Zone::Dining => &[Kind::Skeleton, Kind::Bat, Kind::Spider, Kind::Portrait],
-            Zone::Drop | Zone::Crypt => &[Kind::Spider, Kind::Skeleton, Kind::Bat],
-            Zone::Lair => &[Kind::Pumpkin, Kind::Bat],
+    fn ghost_substitute(level: Level, zone: Zone, rng: &mut Rng) -> Kind {
+        let pool: &[Kind] = match (level, zone) {
+            (Level::Halloween, Zone::GRAVEYARD) => &[Kind::Bat, Kind::Pumpkin],
+            (Level::Halloween, Zone::FOYER) => &[Kind::Bat, Kind::Spider, Kind::Portrait],
+            (Level::Halloween, Zone::LIBRARY) => &[Kind::Book, Kind::Bat, Kind::Spider, Kind::Portrait],
+            (Level::Halloween, Zone::DINING) => &[Kind::Skeleton, Kind::Bat, Kind::Spider, Kind::Portrait],
+            (Level::Halloween, Zone::DROP | Zone::CRYPT) => &[Kind::Spider, Kind::Skeleton, Kind::Bat],
+            (Level::Christmas, Zone::FOREST) => &[Kind::Bat, Kind::Pumpkin],
+            (Level::Christmas, Zone::VILLAGE) => &[Kind::Bat, Kind::Skeleton, Kind::Pumpkin],
+            (Level::Christmas, Zone::FACTORY) => &[Kind::Book, Kind::Spider, Kind::Skeleton, Kind::Portrait],
+            (Level::Christmas, Zone::LAKE) => &[Kind::Pumpkin, Kind::Skeleton, Kind::Bat],
+            (Level::Christmas, Zone::CAVERN) => &[Kind::Spider, Kind::Bat],
+            (Level::Christmas, Zone::ROOFTOPS | Zone::CHIMNEY | Zone::PLUNGE) => &[Kind::Bat],
+            _ => &[Kind::Pumpkin, Kind::Bat],
         };
         pool[rng.int(0, pool.len() as i32 - 1) as usize]
     }
@@ -934,7 +984,7 @@ impl Game {
         // Pumpkins/skeletons with no floor nearby turn into ghosts; one in five of
         // those becomes a different enemy instead.
         let mut pick = Rng::new(seed ^ 0x6a09_e667);
-        let ghost_sub = if near.is_none() && pick.chance(0.2) { Some(Self::ghost_substitute(self.zone, &mut pick)) } else { None };
+        let ghost_sub = if near.is_none() && pick.chance(0.2) { Some(Self::ghost_substitute(self.level, self.zone, &mut pick)) } else { None };
         let lane = Self::LANES[self.lane % Self::LANES.len()];
         let aspect = self.screen.x / self.screen.y.max(1.0);
         let focal = 1.0 / 35f32.to_radians().tan();
@@ -942,14 +992,20 @@ impl Game {
         let sample_frac = [0.0, 0.25, 0.5, 0.75, 1.0];
         let mut best: Option<(f32, Target)> = None;
         let mut valid = 0;
+        // How many tries those who stand on the ground get to find a spot. Holly Hollow's
+        // woods and streets hide most of the ground, so they get longer there.
+        let (ground_tries, sub_tries) = match self.level {
+            Level::Halloween => (32, 56),
+            Level::Christmas => (76, 88),
+        };
         for attempt in 0..96 {
             if valid >= 8 {
                 break;
             }
             // No floor for them to stand on near the track? A ghost takes their place.
-            let kind = if attempt >= 32 && matches!(kind, Kind::Pumpkin | Kind::Skeleton) {
+            let kind = if attempt >= ground_tries && matches!(kind, Kind::Pumpkin | Kind::Skeleton) {
                 match ghost_sub {
-                    Some(sub) if attempt < 56 && !matches!(sub, Kind::Pumpkin | Kind::Skeleton) => sub,
+                    Some(sub) if attempt < sub_tries && !matches!(sub, Kind::Pumpkin | Kind::Skeleton) => sub,
                     Some(_) => Kind::Bat,
                     None => Kind::Ghost,
                 }
@@ -1126,7 +1182,7 @@ impl Game {
             }
             Kind::Portrait => {
                 // Only in the house's rooms, from a stretch of plain wall beside the track.
-                let in_house = |p: Vec3| matches!(zone_at(p), Zone::Foyer | Zone::Library | Zone::Dining);
+                let in_house = |p: Vec3| self.walls_zone(self.zone_of(p));
                 if near.is_some() || !in_house(base) {
                     return None;
                 }
@@ -1161,7 +1217,7 @@ impl Game {
         let steps = if matches!(kind, Kind::Bat | Kind::Candy) { 10 } else { 6 };
         for i in 0..=steps {
             let p = Self::motion(&t, t.life * i as f32 / steps as f32);
-            if !self.body_clear(kind, p) || (kind == Kind::Book && zone_at(p) != Zone::Library) {
+            if !self.body_clear(kind, p) || (kind == Kind::Book && self.zone_of(p) != self.books_zone()) {
                 return None;
             }
         }
@@ -1238,7 +1294,8 @@ impl Game {
             };
             if (0..=10).all(|i| clear(Self::motion(&t, life * i as f32 / 10.0))) {
                 let pan = self.pan_of(a);
-                self.sfx(Sfx::Squeak, 0.22, pan, rng.range(0.85, 1.35));
+                let sfx = if self.level == Level::Christmas { Sfx::Zip } else { Sfx::Squeak };
+                self.sfx(sfx, 0.22, pan, rng.range(0.85, 1.35));
                 self.spawn_kinds[Kind::Bat.index()] += 1;
                 self.spawn_stats.0 += 1;
                 self.log_spawn(&t, None);
@@ -1258,8 +1315,8 @@ impl Game {
 
     /// Plays a whole ride with `players` riders who never shoot and returns every target
     /// that appeared; then the boss fight, hit steadily, and the helpers he summons.
-    pub fn record_spawns(track: Track, world: World, players: usize, screen: Vec2) -> (Vec<SpawnRecord>, Vec<SpawnRecord>) {
-        let mut g = Game::new(track, world, false, 0);
+    pub fn record_spawns(track: Track, world: World, level: Level, players: usize, screen: Vec2) -> (Vec<SpawnRecord>, Vec<SpawnRecord>) {
+        let mut g = Game::new(track, world, level, false, 0);
         g.screen = screen;
         for p in g.players.iter_mut().take(players) {
             p.joined = true;
@@ -1289,7 +1346,7 @@ impl Game {
         let mist = self
             .mist
             .iter()
-            .map(|p| (p.pos, p.half, p.ph, p.alpha, p.tint, p.wander, p.rise, p.zones.iter().fold(0u8, |m, z| m | 1 << *z as u8)))
+            .map(|p| (p.pos, p.half, p.ph, p.alpha, p.tint, p.wander, p.rise, p.zones.iter().fold(0u8, |m, z| m | 1 << z.0)))
             .collect();
         (self.fires.clone(), self.cauldrons.clone(), self.clouds.clone(), mist)
     }
@@ -1307,15 +1364,18 @@ impl Game {
     }
 
     fn spawn_sound(&mut self, kind: Kind, at: Vec3) {
-        let (sfx, vol) = match kind {
-            Kind::Ghost => (Sfx::Ghost, 0.35),
-            Kind::Bat => (Sfx::Squeak, 0.3),
-            Kind::Skeleton => (Sfx::Rattle, 0.45),
-            Kind::Spider => (Sfx::Zip, 0.3),
-            Kind::Book => (Sfx::Flutter, 0.4),
-            Kind::Pumpkin => (Sfx::Boing, 0.35),
-            Kind::Candy => (Sfx::Bonus, 0.25),
-            Kind::Portrait => (Sfx::DeepBoing, 0.5),
+        let (sfx, vol) = match (self.level, kind) {
+            (Level::Christmas, Kind::Ghost) => (Sfx::Boing, 0.3),
+            (Level::Christmas, Kind::Bat) => (Sfx::Zip, 0.3),
+            (Level::Christmas, Kind::Spider) => (Sfx::Ding, 0.3),
+            (_, Kind::Ghost) => (Sfx::Ghost, 0.35),
+            (_, Kind::Bat) => (Sfx::Squeak, 0.3),
+            (_, Kind::Skeleton) => (Sfx::Rattle, 0.45),
+            (_, Kind::Spider) => (Sfx::Zip, 0.3),
+            (_, Kind::Book) => (Sfx::Flutter, 0.4),
+            (_, Kind::Pumpkin) => (Sfx::Boing, 0.35),
+            (_, Kind::Candy) => (Sfx::Bonus, 0.25),
+            (_, Kind::Portrait) => (Sfx::DeepBoing, 0.5),
         };
         let k = kind.index();
         if self.total_t - self.last_spawn_sound[k] < 1.2 {
@@ -1455,7 +1515,7 @@ impl Game {
                     self.boss = Some(Boss {
                         hp,
                         max_hp: hp,
-                        pos: Vec3::new(0.0, -26.0, 200.0),
+                        pos: self.level.boss_home(),
                         t: 0.0,
                         sway: 0.0,
                         guard_t: -5.0,
@@ -1463,13 +1523,13 @@ impl Game {
                         wobble: 0.0,
                         summons_done: 0,
                         taunt: 2.5,
-                        taunt_text: "MWAHAHA!",
+                        taunt_text: self.theme.boss_first_taunt,
                         defeated: false,
                     });
-                    self.banner = ("THE PUMPKIN KING!".into(), 0.0);
+                    self.banner = (format!("{}!", self.theme.boss), 0.0);
                     self.shake = 0.6;
                     self.sfx(Sfx::Rumble, 0.8, 0.0, 1.0);
-                    self.sfx(Sfx::Laugh, 0.9, 0.0, 1.0);
+                    self.sfx(Sfx::Laugh, 0.9, 0.0, self.theme.laugh_pitch);
                 }
             }
             State::Boss => self.update_boss(dt),
@@ -1744,7 +1804,7 @@ impl Game {
             eye = f.pos + Vec3::Y * 1.9;
             up = Vec3::Y;
         }
-        let door_centre = Vec3::new(0.0, DOOR_FLOOR + 6.5, DOOR_Z);
+        let door_centre = self.level.doors().centre();
         if let (Some(b), true) = (&self.boss, matches!(self.state, State::Boss | State::Victory)) {
             let to = (b.pos - eye).normalize_or_zero();
             let boss_look = dir.lerp(to, 0.3).normalize();
@@ -1774,19 +1834,19 @@ impl Game {
         self.viewproj = self.proj() * view;
 
         // Zone banners and fog transitions.
-        let z = zone_at(f.pos);
+        let z = self.zone_on_ride(d, f.pos);
         if z != self.zone && self.state == State::Ride {
             self.zone = z;
-            self.banner = (zone_name(z).into(), 0.0);
-            // (No sound on the drop into the crypt.)
-            if z != Zone::Drop {
+            self.banner = (self.theme.zone_name(z).into(), 0.0);
+            // (No sound on the big drops.)
+            if !self.theme.section(z).quiet {
                 self.sfx(Sfx::Whoosh, 0.5, 0.0, 1.0);
             }
         }
         if self.state == State::Title {
-            self.zone = Zone::Graveyard;
+            self.zone = Zone(0);
         }
-        let (mut fc, mut fr, lamp) = zone_fog(zone_at(f.pos));
+        let (mut fc, mut fr, lamp) = self.theme.zone_fog(self.zone_on_ride(d, f.pos));
         let mut rate = 1.5;
         // Once the boss doors open, the hall beyond fades away into pure darkness.
         let doors_opening = self.state == State::Victory && self.state_t > DOOR_START;
@@ -1943,7 +2003,12 @@ impl Game {
             p.hits += 1;
             p.counts[t.kind.index()] += 1;
             self.popups.push(Popup { pos: t.pos + Vec3::Y * 0.5, text: format!("+{pts}"), color, age: 0.0, big: t.kind == Kind::Candy });
-            self.burst(t.pos, if t.kind == Kind::Candy { 40 } else { 22 }, color, t.kind == Kind::Ghost);
+            // Ghosts pop in a puff of mist, snowmen in a puff of snow.
+            let puff = match self.level {
+                Level::Halloween => t.kind == Kind::Ghost,
+                Level::Christmas => t.kind == Kind::Pumpkin,
+            };
+            self.burst(t.pos, if t.kind == Kind::Candy { 40 } else { 22 }, color, puff);
             let pan = (aim.x / self.screen.x * 2.0 - 1.0) * 0.8;
             self.sfx(Sfx::Pop, 0.7, pan, 0.9 + pi as f32 * 0.12);
             // Every normal enemy pops with the same "poof" as the ghost; the golden
@@ -1990,7 +2055,7 @@ impl Game {
     }
 
     fn burst(&mut self, at: Vec3, n: usize, player_color: [f32; 3], puff: bool) {
-        let candy = [[1.0, 0.55, 0.1], [0.7, 0.3, 1.0], [0.4, 1.0, 0.3], [1.0, 0.9, 0.2], [1.0, 0.45, 0.75], [1.0, 1.0, 1.0]];
+        let candy = self.theme.confetti;
         for k in 0..n {
             let v = Vec3::new(self.rng.range(-1.0, 1.0), self.rng.range(-0.2, 1.4), self.rng.range(-1.0, 1.0)).normalize_or_zero()
                 * self.rng.range(2.0, 5.5);
@@ -2060,6 +2125,8 @@ impl Game {
 
     fn update_boss(&mut self, dt: f32) {
         let n_targets = self.targets.len();
+        let theme = self.theme;
+        let home = self.level.boss_home();
         let Some(b) = self.boss.as_mut() else { return };
         b.t += dt;
         b.flash = (b.flash - dt * 5.0).max(0.0);
@@ -2074,15 +2141,16 @@ impl Game {
             b.guard_t = 0.0;
         }
         let x = b.sway.sin() * (7.5 + rage * 2.0) * smooth((b.t - 2.0) / 2.0);
-        let y = -26.0 + (16.5 + (b.t * 1.1).sin() * 1.3) * rise;
-        let z = 200.0 + (b.t * 0.37).sin() * 2.5 - rage * 2.0;
-        b.pos = Vec3::new(x, y, z);
+        let y = home.y + (16.5 + (b.t * 1.1).sin() * 1.3) * rise;
+        let z = home.z + (b.t * 0.37).sin() * 2.5 - rage * 2.0;
+        b.pos = Vec3::new(home.x + x, y, z);
         b.taunt -= dt;
         if b.taunt <= 0.0 {
             b.taunt = 5.5;
-            let lines = ["MWAHAHA!", "TRICK OR TREAT!", "YOU CAN'T CATCH ME!", "OOH, THAT TICKLES!", "BOO!"];
+            let lines = &theme.taunts;
             b.taunt_text = lines[(b.t as usize / 5) % lines.len()];
-            self.sounds.push(SoundEvent { sfx: Sfx::Laugh, vol: 0.7, pan: 0.0, pitch: 0.95 + (b.t * 0.37).fract() * 0.15 });
+            let pitch = (0.95 + (b.t * 0.37).fract() * 0.15) * theme.laugh_pitch;
+            self.sounds.push(SoundEvent { sfx: Sfx::Laugh, vol: 0.7, pan: 0.0, pitch });
         }
         // Summon helpers at 75%, 50% and 25% health (extra points for everyone).
         let thresholds = [0.75, 0.5, 0.25];
@@ -2090,8 +2158,8 @@ impl Game {
         if (b.summons_done as usize) < thresholds.len() && b.hp / b.max_hp < thresholds[b.summons_done as usize] {
             b.summons_done += 1;
             b.taunt = 3.0;
-            b.taunt_text = "GET THEM, MY BATS!";
-            self.sounds.push(SoundEvent { sfx: Sfx::Laugh, vol: 0.8, pan: 0.0, pitch: 1.1 });
+            b.taunt_text = theme.summon;
+            self.sounds.push(SoundEvent { sfx: Sfx::Laugh, vol: 0.8, pan: 0.0, pitch: 1.1 * theme.laugh_pitch });
             summon = true;
         }
         let pos = b.pos;
@@ -2157,7 +2225,7 @@ impl Game {
                 self.burst(at, 40, color, true);
             }
             self.targets.clear();
-            self.banner = ("YOU BEAT THE PUMPKIN KING!".into(), 0.0);
+            self.banner = (self.theme.boss_beaten.into(), 0.0);
             self.shake = 1.0;
             // Everyone who rode gets a party bonus.
             for p in self.players.iter_mut().filter(|p| p.joined) {
@@ -2170,7 +2238,10 @@ impl Game {
 
     /// The doors only need drawing once the ride is underground near the lair.
     fn camera_near_lair(&self) -> bool {
-        self.cam.z > 150.0 && self.cam.y < -5.0
+        match self.level {
+            Level::Halloween => self.cam.z > 150.0 && self.cam.y < -5.0,
+            _ => self.cam.distance(self.level.doors().centre()) < 80.0,
+        }
     }
 
     pub fn frame(&self) -> FrameOut {
@@ -2184,7 +2255,7 @@ impl Game {
     /// Flat Minecraft-style clouds drifting slowly over the graveyard. Unfogged (they're
     /// far beyond the fog), so they fade into the sky colour by hand with distance.
     fn draw_clouds(&self, out: &mut Vec<Vertex>) {
-        let sky = zone_fog(Zone::Graveyard).0;
+        let sky = self.theme.zone_fog(self.zone).0;
         let drift = self.total_t * CLOUD_SPEED;
         let span = CLOUD_X1 - CLOUD_X0;
         let uv = tile_uv(T_WHITE);
@@ -2293,18 +2364,22 @@ impl Game {
             push_wisps(out, c + Vec3::Y * 0.8, 1.3, seed, t, [0.19, 0.75, 0.3]);
         }
 
-        if self.zone == Zone::Graveyard {
+        if self.theme.section(self.zone).outdoors {
             self.draw_clouds(out);
+            if self.level == Level::Christmas {
+                self.draw_snowfall(out);
+            }
         }
 
         // The grand doors behind the Pumpkin King (each leaf swings into the hall).
         if self.camera_near_lair() {
             let swing = self.door_open * 1.75;
-            let light = self.world.light_at(Vec3::new(0.0, DOOR_FLOOR + 3.0, DOOR_Z - 1.5)).max(Vec3::splat(0.35));
-            let left = Mat4::from_translation(Vec3::new(-DOOR_HALF, DOOR_FLOOR, DOOR_Z))
+            let doors = self.level.doors();
+            let light = self.world.light_at(Vec3::new(doors.x, doors.floor + 3.0, doors.z - 1.5)).max(Vec3::splat(0.35));
+            let left = Mat4::from_translation(Vec3::new(doors.x - DOOR_HALF, doors.floor, doors.z))
                 * Mat4::from_rotation_y(-swing)
                 * Mat4::from_translation(Vec3::new(DOOR_HALF * 0.5, 0.0, 0.0));
-            let right = Mat4::from_translation(Vec3::new(DOOR_HALF, DOOR_FLOOR, DOOR_Z))
+            let right = Mat4::from_translation(Vec3::new(doors.x + DOOR_HALF, doors.floor, doors.z))
                 * Mat4::from_rotation_y(swing)
                 * Mat4::from_translation(Vec3::new(-DOOR_HALF * 0.5, 0.0, 0.0));
             m.door[0].draw(out, &left, light, 0.0, None);
@@ -2321,8 +2396,9 @@ impl Game {
             // Gentle pulse so little players can tell what to aim at.
             let hl = 0.12 + 0.12 * (a * 6.0 + t.phase).sin();
             match t.kind {
+                _ if self.level == Level::Christmas && self.draw_christmas_target(out, t, base, yaw, light, hl) => {}
                 Kind::Ghost => {
-                    let tint = if zone_at(t.pos) == Zone::Crypt { Some([0.7, 1.0, 0.8]) } else { None };
+                    let tint = if self.level == Level::Halloween && zone_at(t.pos) == Zone::CRYPT { Some([0.7, 1.0, 0.8]) } else { None };
                     let mm = base * Mat4::from_rotation_z((a * 2.0 + t.phase).sin() * 0.12) * Mat4::from_translation(-Vec3::Y * m.ghost.size.y * 0.5);
                     m.ghost.draw(out, &mm, light, hl, tint);
                 }
@@ -2340,7 +2416,7 @@ impl Game {
                     m.bat_wing.draw(out, &rw, light, hl, None);
                 }
                 Kind::Candy => {
-                    let mm = Mat4::from_translation(t.pos) * Mat4::from_rotation_y(a * 5.0) * Mat4::from_rotation_x((a * 3.0).sin() * 0.5) * Mat4::from_scale(Vec3::splat(s)) * Mat4::from_translation(-Vec3::Y * 0.26);
+                    let mm = Mat4::from_translation(t.pos) * Mat4::from_rotation_y(a * 5.0) * Mat4::from_rotation_x((a * 3.0).sin() * 0.5) * Mat4::from_scale(Vec3::splat(s)) * Mat4::from_translation(-Vec3::Y * m.candy.size.y * 0.5);
                     m.candy.draw(out, &mm, light, hl, None);
                     // Pink, cyan and lime sparkles, each twinkling on its own orbit.
                     for (k, c) in [[1.0, 0.25, 0.8], [0.25, 0.95, 1.0], [0.6, 1.0, 0.25]].into_iter().enumerate() {
@@ -2488,6 +2564,84 @@ impl Game {
         }
     }
 
+    /// The Christmas look of a target, for the kinds that are built differently from their
+    /// Halloween selves (the others are drawn by the shared code with Christmas models).
+    /// Returns false if the shared code should draw it.
+    fn draw_christmas_target(&self, out: &mut Vec<Vertex>, t: &Target, base: Mat4, yaw: f32, light: Vec3, hl: f32) -> bool {
+        let m = &self.models;
+        let a = t.age;
+        match t.kind {
+            Kind::Bat => {
+                // A toy plane, rocking its wings, its propeller a blur.
+                let body = base * Mat4::from_rotation_z((a * 3.0 + t.phase).sin() * 0.25) * Mat4::from_translation(-Vec3::Y * 0.3);
+                m.plane.draw(out, &body, light, hl, None);
+                let prop = body * Mat4::from_translation(Vec3::new(0.0, 0.275, 0.47)) * Mat4::from_rotation_z(a * 40.0) * Mat4::from_scale(Vec3::new(0.85, 0.08, 0.03));
+                push_box(out, &prop, T_WHITE, [0.35, 0.3, 0.3], light, 0.3);
+            }
+            Kind::Spider => {
+                // A Christmas ornament on its hook, slowly turning.
+                let top = t.a;
+                let len = (top.y - t.pos.y).max(0.05);
+                let thread = Mat4::from_translation(Vec3::new(t.pos.x, t.pos.y + len * 0.5, t.pos.z)) * Mat4::from_scale(Vec3::new(0.03, len, 0.03));
+                push_box(out, &thread, T_WHITE, [0.95, 0.85, 0.4], light, 0.6);
+                let b = &m.bauble[t.variant % 3];
+                let mm = base * Mat4::from_rotation_y(a * 1.2 - yaw) * Mat4::from_translation(-Vec3::Y * b.size.y * 0.5);
+                b.draw(out, &mm, light, hl, None);
+            }
+            Kind::Book => {
+                // A present flying about, its lid flapping open and shut.
+                let open = 0.15 + 0.7 * (0.5 + 0.5 * (a * 8.0 + t.phase).sin());
+                let flight = base * Mat4::from_rotation_x(0.3);
+                let k = t.variant % 3;
+                m.present_box[k].draw(out, &(flight * Mat4::from_translation(-Vec3::Y * 0.25)), light, hl, None);
+                let lid = flight * Mat4::from_translation(Vec3::new(0.0, 0.25, -0.3)) * Mat4::from_rotation_x(-open) * Mat4::from_translation(Vec3::new(0.0, 0.0, 0.3));
+                m.present_lid[k].draw(out, &lid, light, hl, None);
+            }
+            Kind::Portrait => {
+                // A wreath: peels off its wall like the haunted paintings, its berries twinkling.
+                let n = (t.a - t.home).normalize_or_zero();
+                let peel = smooth(a / PORTRAIT_PEEL);
+                let pos = if a < PORTRAIT_PEEL { t.home + n * (0.07 + 0.63 * peel) } else { t.pos };
+                let wall_yaw = n.x.atan2(n.z);
+                let turn = smooth((a - 0.3) / 1.2);
+                let d = (yaw - wall_yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                let mm = Mat4::from_translation(pos)
+                    * Mat4::from_rotation_y(wall_yaw + d * turn)
+                    * Mat4::from_rotation_z((a * 1.9 + t.phase).sin() * 0.14 * turn + a * 0.6 * turn)
+                    * Mat4::from_rotation_x(-0.25 * peel * (1.0 - turn))
+                    * Mat4::from_scale(Vec3::splat(t.scale.max(0.001)))
+                    * Mat4::from_translation(-Vec3::Y * m.wreath.size.y * 0.5);
+                let twinkle = 0.6 + 0.4 * (a * 7.0 + t.phase).sin().abs();
+                m.wreath.draw(out, &mm, light, hl * twinkle, None);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Snow falling round the camera (out in the open only).
+    fn draw_snowfall(&self, out: &mut Vec<Vertex>) {
+        const BOX: Vec3 = Vec3::new(36.0, 18.0, 36.0);
+        let t = self.total_t;
+        let origin = self.cam - Vec3::new(BOX.x * 0.5, BOX.y * 0.4, BOX.z * 0.5);
+        for k in 0..700 {
+            let h = |s: i32| hash3(k, s, 31);
+            let fall = 0.9 + h(1) * 0.8;
+            // Each flake has a home in a box that wraps around the camera as it moves.
+            let home = Vec3::new(h(2) * BOX.x, h(3) * BOX.y - t * fall, h(4) * BOX.z);
+            let sway = Vec3::new((t * 0.8 + h(5) * 6.28).sin() * 0.4, 0.0, (t * 0.6 + h(6) * 6.28).cos() * 0.4);
+            let rel = home - origin + sway;
+            let p = origin + Vec3::new(rel.x.rem_euclid(BOX.x), rel.y.rem_euclid(BOX.y), rel.z.rem_euclid(BOX.z));
+            // Only out under the open sky.
+            if !self.world.open_sky(p) {
+                continue;
+            }
+            let size = 0.05 + h(7) * 0.05;
+            let mm = Mat4::from_translation(p) * Mat4::from_rotation_y(t + h(8) * 6.0) * Mat4::from_scale(Vec3::splat(size));
+            push_box(out, &mm, T_WHITE, [0.95, 0.97, 1.0], Vec3::ONE, 0.85);
+        }
+    }
+
     /// Draws player `i`'s crosshair, if it is showing, and returns the screen point it is on.
     pub fn draw_crosshair(&self, i: usize, ui: &mut Ui) -> Option<Vec2> {
         let p = &self.players[i];
@@ -2537,7 +2691,7 @@ impl Game {
         let (w, h) = (ui.w, ui.h);
         let unit = ui.unit;
         let white = [1.0, 1.0, 1.0, 1.0];
-        let orange = [1.0, 0.6, 0.1, 1.0];
+        let orange = self.theme.accent;
 
         // Score popups (projected world text).
         for p in &self.popups {
@@ -2588,10 +2742,12 @@ impl Game {
                     // them down over the Pumpkin King, so they stay up near the top of the view.
                     let name_y = if self.vr { ui.unzoom(0.0, h * 0.08).1 } else { 4.0 * unit };
                     let y = name_y + 8.0 * 1.4 * unit + 3.0 * unit;
-                    ui.text("THE PUMPKIN KING", w * 0.5, name_y, 1.4, orange, Align::Center);
-                    ui.panel(x, y, bw, 7.0 * unit, [0.1, 0.03, 0.12, 0.85], [0.0, 0.0, 0.0, 0.9]);
+                    ui.text(self.theme.boss, w * 0.5, name_y, 1.4, orange, Align::Center);
+                    ui.panel(x, y, bw, 7.0 * unit, self.theme.boss_bar, [0.0, 0.0, 0.0, 0.9]);
                     let f = (b.hp / b.max_hp).max(0.0);
-                    ui.rect(x + unit * 1.5, y + unit * 1.5, (bw - unit * 3.0) * f, 4.0 * unit, [1.0, 0.45 + 0.3 * f, 0.05, 1.0]);
+                    let (empty, full) = self.theme.boss_fill;
+                    let c = [0, 1, 2].map(|i| empty[i] + (full[i] - empty[i]) * f);
+                    ui.rect(x + unit * 1.5, y + unit * 1.5, (bw - unit * 3.0) * f, 4.0 * unit, [c[0], c[1], c[2], 1.0]);
                     if b.taunt > 3.5 && b.t > 3.0 {
                         if let Some((sp, _)) = self.project(b.pos + Vec3::Y * 5.5) {
                             // Over his head, even with the HUD zoomed (but kept below the bar).
@@ -2686,8 +2842,8 @@ impl Game {
         let t = self.state_t;
         let bob = (t * 2.0).sin() * 2.0 * unit;
         ui.rect(0.0, h * 0.1, w, 52.0 * unit, [0.0, 0.0, 0.0, 0.35]);
-        ui.text_fit("HAUNTED HOLLOW", w * 0.5, h * 0.12 + bob, 5.0, w * 0.92, [1.0, 0.55, 0.08, 1.0], Align::Center);
-        ui.text_fit("THE SPOOKY COASTER RIDE", w * 0.5, h * 0.12 + 46.0 * unit, 1.5, w * 0.9, [0.75, 0.55, 1.0, 1.0], Align::Center);
+        ui.text_fit(self.theme.title, w * 0.5, h * 0.12 + bob, 5.0, w * 0.92, self.theme.accent, Align::Center);
+        ui.text_fit(self.theme.subtitle, w * 0.5, h * 0.12 + 46.0 * unit, 1.5, w * 0.9, self.theme.accent2, Align::Center);
         if let Some(best) = self.high.entries.first() {
             let line = format!("TOP SCORE  {}  {}", best.initials, best.score);
             ui.text_fit(&line, w * 0.5, h * 0.12 + 62.0 * unit, 1.1, w * 0.9, [1.0, 0.82, 0.2, 1.0], Align::Center);
@@ -2751,7 +2907,7 @@ impl Game {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
         let t = self.state_t;
         let white = [1.0, 1.0, 1.0, 1.0];
-        ui.text_fit("SHOOT YOUR TARGET TO START!", w * 0.5, h * 0.18, 2.4, w * 0.9, [1.0, 0.6, 0.1, 1.0], Align::Center);
+        ui.text_fit("SHOOT YOUR TARGET TO START!", w * 0.5, h * 0.18, 2.4, w * 0.9, self.theme.accent, Align::Center);
         // One practice target per player, in their colour.
         let r = self.practice_radius();
         for (i, p) in self.players.iter().enumerate() {
@@ -2805,8 +2961,8 @@ impl Game {
 
     fn draw_results(&self, ui: &mut Ui) {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
-        ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.94]);
-        ui.text_fit("WHAT A SPOOKTACULAR RIDE!", w * 0.5, h * 0.07, 2.6, w * 0.92, [1.0, 0.55, 0.08, 1.0], Align::Center);
+        ui.rect(0.0, 0.0, w, h, self.theme.backdrop);
+        ui.text_fit(self.theme.results, w * 0.5, h * 0.07, 2.6, w * 0.92, self.theme.accent, Align::Center);
         let mut order: Vec<usize> = (0..4).filter(|&i| self.players[i].joined).collect();
         order.sort_by(|a, b| self.players[*b].score.cmp(&self.players[*a].score));
         // How many of the enemies the team saw it popped, and the bonus for getting them all.
@@ -2903,9 +3059,9 @@ impl Game {
     fn draw_initials(&self, ui: &mut Ui) {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
         let t = self.state_t;
-        ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.94]);
+        ui.rect(0.0, 0.0, w, h, self.theme.backdrop);
         let pulse = 1.0 + 0.04 * (t * 5.0).sin();
-        ui.text_fit("NEW HIGH SCORE!", w * 0.5, h * 0.04, 2.6 * pulse, w * 0.9, [1.0, 0.55, 0.08, 1.0], Align::Center);
+        ui.text_fit("NEW HIGH SCORE!", w * 0.5, h * 0.04, 2.6 * pulse, w * 0.9, self.theme.accent, Align::Center);
         let how = if self.debug { "CLICK THE LETTERS OF YOUR NAME, THEN END" } else { "SHOOT THE LETTERS OF YOUR NAME, THEN END" };
         ui.text_fit(how, w * 0.5, h * 0.04 + 26.0 * unit, 1.0, w * 0.9, [0.85, 0.85, 0.95, 1.0], Align::Center);
         let left = (INITIALS_SECONDS - t).max(0.0).ceil();
@@ -2930,7 +3086,7 @@ impl Game {
                     fill = [fill[0] + c[0] * 0.15, fill[1] + c[1] * 0.15, fill[2] + c[2] * 0.15, 0.95];
                     [c[0], c[1], c[2], 1.0]
                 }
-                None => [0.5, 0.32, 0.7, 1.0],
+                None => self.theme.key_border,
             };
             ui.panel(x, y, cw, ch, fill, border);
             ui.panel(x + unit, y + unit, cw - 2.0 * unit, ch - 2.0 * unit, fill, border);
@@ -2977,8 +3133,8 @@ impl Game {
     fn draw_high_scores(&self, ui: &mut Ui) {
         let (w, h, unit) = (ui.w, ui.h, ui.unit);
         let t = self.state_t;
-        ui.rect(0.0, 0.0, w, h, [0.04, 0.02, 0.07, 0.94]);
-        ui.text_fit("HIGH SCORES", w * 0.5, h * 0.05, 2.8, w * 0.9, [1.0, 0.55, 0.08, 1.0], Align::Center);
+        ui.rect(0.0, 0.0, w, h, self.theme.backdrop);
+        ui.text_fit("HIGH SCORES", w * 0.5, h * 0.05, 2.8, w * 0.9, self.theme.accent, Align::Center);
         let top = h * 0.17;
         let row_h = h * 0.68 / crate::highscores::TABLE_SIZE as f32;
         let sc = (row_h * 0.62 / (8.0 * unit)).min(w * 0.6 / ui.text_width("10.  AAA  0000000", 1.0));
@@ -3016,7 +3172,7 @@ impl Game {
 
     fn award(&self, i: usize) -> &'static str {
         let p = &self.players[i];
-        let mut best = AWARDS.len() - 1;
+        let mut best = self.theme.awards.len() - 1;
         let mut best_v = 0;
         // Boss hits count a little less so the boss doesn't always win.
         for (k, &v) in p.counts.iter().enumerate() {
@@ -3026,7 +3182,7 @@ impl Game {
                 best = k;
             }
         }
-        AWARDS[best]
+        self.theme.awards[best]
     }
 }
 
@@ -3053,11 +3209,18 @@ struct Puff {
     zones: &'static [Zone],
 }
 
+/// Mist and haze, drawn only while the camera is in the parts of the ride they belong to.
+fn mist_puffs(track: &Track, level: Level) -> Vec<Puff> {
+    match level {
+        Level::Halloween => haunted_mist(track),
+        Level::Christmas => frosty_mist(),
+    }
+}
+
 /// Mist over the cemetery (station up to the house), a green haze over the crypt floor,
 /// and green wisps curling up out of the hole in the dining-hall floor and down the shaft.
-fn mist_puffs(track: &Track) -> Vec<Puff> {
-    const GREY: [f32; 3] = [0.5, 0.55, 0.68];
-    const GREEN: [f32; 3] = [0.35, 0.75, 0.42];
+fn haunted_mist(track: &Track) -> Vec<Puff> {
+    let (grey, green, ground_alpha) = ([0.5, 0.55, 0.68], [0.35, 0.75, 0.42], 0.2);
     let mut rng = Rng::new(4242);
     let mut out = vec![];
     let mut puff = |ph: f32, pos: Vec3, half: Vec2, alpha, tint, wander, rise, zones| {
@@ -3067,20 +3230,20 @@ fn mist_puffs(track: &Track) -> Vec<Puff> {
     for _ in 0..140 {
         let (x, z) = (rng.range(-30.0, 30.0), rng.range(-28.0, 36.0));
         let half = Vec2::new(rng.range(3.0, 6.0), 1.0);
-        puff(rng.range(0.0, 6.28), Vec3::new(x, 1.0 + half.y * 0.85, z), half, 0.2, GREY, 1.8, 0.0, &[Zone::Graveyard]);
+        puff(rng.range(0.0, 6.28), Vec3::new(x, 1.0 + half.y * 0.85, z), half, ground_alpha, grey, 1.8, 0.0, &[Zone::GRAVEYARD]);
     }
     // Crypt floor (top at y = -17), seen from the bottom of the drop onwards.
     for _ in 0..90 {
         let (x, z) = (rng.range(-13.0, 13.0), rng.range(141.0, 175.0));
         let half = Vec2::new(rng.range(2.5, 5.0), 0.9);
-        puff(rng.range(0.0, 6.28), Vec3::new(x, -17.0 + half.y * 0.85, z), half, 0.22, GREEN, 1.4, 0.0, &[Zone::Drop, Zone::Crypt]);
+        puff(rng.range(0.0, 6.28), Vec3::new(x, -17.0 + half.y * 0.85, z), half, 0.22, green, 1.4, 0.0, &[Zone::DROP, Zone::CRYPT]);
     }
     // Wisps rising out of the hole the track dives into (dining floor at y = 1, z ~128-131).
     for _ in 0..18 {
         let pos = Vec3::new(rng.range(-1.8, 1.8), rng.range(-1.5, 0.5), rng.range(127.5, 131.5));
         let half = Vec2::new(rng.range(1.2, 2.2), rng.range(0.8, 1.3));
         let rise = rng.range(2.5, 4.0);
-        puff(rng.range(0.0, 6.28), pos, half, 0.32, GREEN, 0.5, rise, &[Zone::Library, Zone::Dining, Zone::Drop]);
+        puff(rng.range(0.0, 6.28), pos, half, 0.32, green, 0.5, rise, &[Zone::LIBRARY, Zone::DINING, Zone::DROP]);
     }
     // A glowing haze filling the shaft itself, following the track down.
     for k in 0..16 {
@@ -3088,7 +3251,47 @@ fn mist_puffs(track: &Track) -> Vec<Puff> {
         let rail = track.pos_at(track.dist_at_time(track.time_at_z(z)));
         let pos = Vec3::new(rail.x + rng.range(-1.5, 1.5), rail.y + 1.2 + rng.range(-0.4, 0.8), z);
         let half = Vec2::new(rng.range(1.5, 2.5), 1.2);
-        puff(rng.range(0.0, 6.28), pos, half, 0.2, GREEN, 0.4, 0.0, &[Zone::Dining, Zone::Drop]);
+        puff(rng.range(0.0, 6.28), pos, half, 0.2, green, 0.4, 0.0, &[Zone::DINING, Zone::DROP]);
+    }
+    out
+}
+
+/// Holly Hollow: a thin haze of blown snow over the forest and the frozen lake, cold
+/// vapour curling out of the crack in the ice, an icy mist on the cavern floor, and smoke
+/// from the toy factory's chimney.
+fn frosty_mist() -> Vec<Puff> {
+    const SNOW: [f32; 3] = [0.75, 0.82, 0.95];
+    const ICE: [f32; 3] = [0.55, 0.78, 0.95];
+    const SMOKE: [f32; 3] = [0.45, 0.45, 0.5];
+    let mut rng = Rng::new(4242);
+    let mut out = vec![];
+    let mut puff = |ph: f32, pos: Vec3, half: Vec2, alpha, tint, wander, rise, zones| {
+        out.push(Puff { pos, half, ph, alpha, tint, wander, rise, zones });
+    };
+    for _ in 0..110 {
+        let (x, z) = (rng.range(-50.0, 24.0), rng.range(-44.0, 30.0));
+        let half = Vec2::new(rng.range(3.0, 6.0), 1.0);
+        puff(rng.range(0.0, 6.28), Vec3::new(x, 1.0 + half.y * 0.85, z), half, 0.12, SNOW, 1.8, 0.0, &[Zone::FOREST, Zone::VILLAGE]);
+    }
+    for _ in 0..70 {
+        let (x, z) = (rng.range(-38.0, 40.0), rng.range(152.0, 198.0));
+        let half = Vec2::new(rng.range(3.0, 6.0), 0.9);
+        puff(rng.range(0.0, 6.28), Vec3::new(x, 1.0 + half.y * 0.85, z), half, 0.13, SNOW, 2.0, 0.0, &[Zone::LAKE]);
+    }
+    for _ in 0..14 {
+        let pos = Vec3::new(rng.range(13.0, 20.0), rng.range(-1.0, 0.5), rng.range(188.0, 193.0));
+        let half = Vec2::new(rng.range(1.2, 2.2), rng.range(0.8, 1.3));
+        puff(rng.range(0.0, 6.28), pos, half, 0.28, ICE, 0.5, rng.range(2.5, 4.0), &[Zone::LAKE, Zone::PLUNGE]);
+    }
+    for _ in 0..70 {
+        let (x, z) = (rng.range(-22.0, 18.0), rng.range(198.0, 229.0));
+        let half = Vec2::new(rng.range(2.5, 5.0), 0.9);
+        puff(rng.range(0.0, 6.28), Vec3::new(x, -24.0 + half.y * 0.85, z), half, 0.2, ICE, 1.4, 0.0, &[Zone::PLUNGE, Zone::CAVERN]);
+    }
+    for _ in 0..10 {
+        let pos = Vec3::new(rng.range(-17.0, -14.0), 21.0, rng.range(92.0, 95.0));
+        let half = Vec2::new(rng.range(1.5, 2.5), rng.range(1.2, 1.8));
+        puff(rng.range(0.0, 6.28), pos, half, 0.3, SMOKE, 0.6, rng.range(5.0, 8.0), &[Zone::ROOFTOPS]);
     }
     out
 }
@@ -3145,9 +3348,9 @@ mod tests {
 
     #[test]
     fn the_boss_does_not_jump_when_hit() {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        let mut g = Game::new(track, world, false, 0);
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        let mut g = Game::new(track, world, Level::Halloween, false, 0);
         g.update(0.016, &[wii(0, true)], Vec2::new(1280.0, 720.0), None);
         g.skip_to_boss();
         g.ride_t = RIDE_SECONDS;
@@ -3168,9 +3371,9 @@ mod tests {
 
     #[test]
     fn the_vr_rider_shoots_start_and_skips_the_lesson() {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        let mut g = Game::new(track, world, false, 0);
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        let mut g = Game::new(track, world, Level::Halloween, false, 0);
         g.vr = true;
         let screen = Vec2::new(1280.0, 720.0);
         let vr = |at: Vec2, fire: bool| SourceInput { id: SourceId::Vr, aim: Some(at), fire, fire_pressed: fire, ..wii(0, false) };
@@ -3193,9 +3396,9 @@ mod tests {
 
     #[test]
     fn players_must_rejoin_after_the_results_screen() {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        let mut g = Game::new(track, world, false, 0);
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        let mut g = Game::new(track, world, Level::Halloween, false, 0);
         let screen = Vec2::new(1280.0, 720.0);
         // Two remotes join on the title screen.
         g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
@@ -3223,9 +3426,9 @@ mod tests {
             ((40, 39), (30, 30), 0),
         ];
         for (enemies, (hits, shots), bonus) in cases {
-            let track = Track::new();
-            let world = crate::world::generate(&track);
-            let mut g = Game::new(track, world, false, 0);
+            let track = Track::new(Level::Halloween);
+            let world = crate::world::generate(&track, Level::Halloween);
+            let mut g = Game::new(track, world, Level::Halloween, false, 0);
             g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
             g.enemies = enemies;
             for p in &mut g.players[..2] {
@@ -3244,9 +3447,9 @@ mod tests {
 
     #[test]
     fn riders_who_make_the_table_shoot_their_initials() {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        let mut g = Game::new(track, world, false, 0);
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        let mut g = Game::new(track, world, Level::Halloween, false, 0);
         let screen = Vec2::new(1280.0, 720.0);
         g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
         g.players[0].score = 5000;
@@ -3290,9 +3493,9 @@ mod tests {
 
     #[test]
     fn a_swarm_of_bats_flies_up_the_big_drop() {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        let mut g = Game::new(track, world, false, 1);
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        let mut g = Game::new(track, world, Level::Halloween, false, 1);
         let screen = Vec2::new(1280.0, 720.0);
         let (t_drop, t_crypt) = (g.track.time_at_z(127.5), g.track.time_at_z(140.0));
         let mut before = None;
@@ -3319,9 +3522,9 @@ mod tests {
 
     #[test]
     fn haunted_portraits_come_off_the_walls_of_the_house() {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        let mut g = Game::new(track, world, false, 2);
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        let mut g = Game::new(track, world, Level::Halloween, false, 2);
         let screen = Vec2::new(1280.0, 720.0);
         let t_drop = g.track.time_at_z(127.5);
         let mut zones = vec![];
@@ -3335,15 +3538,15 @@ mod tests {
             }
         }
         assert!(g.spawn_kinds[Kind::Portrait.index()] >= 3, "only {} portraits appeared", g.spawn_kinds[Kind::Portrait.index()]);
-        assert!(zones.iter().all(|z| matches!(z, Zone::Foyer | Zone::Library | Zone::Dining)));
-        assert!(zones.contains(&Zone::Dining), "no portraits in the dining hall");
+        assert!(zones.iter().all(|z| matches!(*z, Zone::FOYER | Zone::LIBRARY | Zone::DINING)));
+        assert!(zones.contains(&Zone::DINING), "no portraits in the dining hall");
     }
 
     #[test]
     fn every_player_must_pop_their_practice_target_before_the_ride() {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        let mut g = Game::new(track, world, false, 0);
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        let mut g = Game::new(track, world, Level::Halloween, false, 0);
         let screen = Vec2::new(1280.0, 720.0);
         g.update(0.016, &[wii(0, true), wii(1, true)], screen, None);
         let mut start = wii(0, false);

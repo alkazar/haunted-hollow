@@ -2,6 +2,7 @@
 //! (ghosts, bats, the Pumpkin King...) built from code.
 
 use crate::atlas::{tile_uv, T_WHITE};
+use crate::level::Level;
 use crate::vk::Vertex;
 use glam::{Mat4, Vec3};
 use std::collections::HashMap;
@@ -231,7 +232,10 @@ pub fn hash3(x: i32, y: i32, z: i32) -> f32 {
     (h & 0xffff) as f32 / 65535.0
 }
 
-/// All the voxel models used by targets and the boss. Models face +Z.
+/// All the voxel models used by targets and the boss, for one level. Models face +Z.
+/// The Christmas level fills the shared slots with its own models: `pumpkin` is a
+/// snowman, `ghost` a gingerbread man, `skull`/`torso`/`arm` a nutcracker, `candy` a
+/// golden star, the boss the Snow King, and the doors are wrapped like a present.
 pub struct Models {
     pub ghost: Model,
     pub bat_body: Model,
@@ -249,11 +253,40 @@ pub struct Models {
     pub boss_hand: Model,
     /// The two leaves of the boss doors: [left, right].
     pub door: [Model; 2],
+    // Christmas only.
+    pub plane: Model,
+    pub present_box: [Model; 3],
+    pub present_lid: [Model; 3],
+    pub bauble: [Model; 3],
+    pub wreath: Model,
 }
 
 impl Models {
-    pub fn new() -> Models {
+    pub fn new(level: Level) -> Models {
+        let mut m = Models::halloween();
+        if level == Level::Christmas {
+            m.pumpkin = snowman();
+            m.ghost = gingerbread();
+            m.skull = nutcracker_head();
+            m.torso = nutcracker_body();
+            m.arm = nutcracker_arm();
+            m.candy = gold_star();
+            m.boss_head = snow_king_head(0x202028, 0.0);
+            m.boss_head_angry = snow_king_head(0xff3020, 1.0);
+            m.boss_cape = snow_king_body();
+            m.boss_hand = mitten();
+            m.door = [present_door(false), present_door(true)];
+        }
+        m
+    }
+
+    fn halloween() -> Models {
         Models {
+            plane: plane(),
+            present_box: [present_box(0xc8202c, 0xf0c840), present_box(0x1f7a3a, 0xe83040), present_box(0x2850c8, 0xe8e8f0)],
+            present_lid: [present_lid(0xc8202c, 0xf0c840), present_lid(0x1f7a3a, 0xe83040), present_lid(0x2850c8, 0xe8e8f0)],
+            bauble: [bauble(0xd02030, 0xf0d060), bauble(0xe8b830, 0xffffff), bauble(0x3060e0, 0xe8e8f0)],
+            wreath: wreath(),
             ghost: ghost(),
             bat_body: bat_body(),
             bat_wing: Model::build(6, 1, 4, 0.12, |x, _, z| {
@@ -556,20 +589,20 @@ fn boss_cape() -> Model {
 /// two leaves form a whole pumpkin when closed. Built in 0.5 m voxels; voxel x 0 is
 /// the hinge side of the left leaf and the centre side of the right leaf.
 fn door_leaf(right: bool) -> Model {
-    use crate::world::{in_doorway, DOOR_FLOOR, DOOR_HALF};
+    use crate::world::{in_doorway, DOOR_HALF};
     let vw = (DOOR_HALF * 2.0) as i32; // voxels across one leaf
     let vh = 26;
     Model::build(vw, vh, 1, 0.5, move |ix, iy, _| {
         // Distance of this voxel's centre from the middle of the doorway.
         let k = if right { ix } else { vw - 1 - ix };
         let cx = k as f32 * 0.5 + 0.25;
-        let cy = DOOR_FLOOR + iy as f32 * 0.5 + 0.25;
+        let cy = iy as f32 * 0.5 + 0.25;
         if !in_doorway(cx, cy, 0.0) {
             return None;
         }
         let edge = !in_doorway(cx, cy + 0.5, 0.0) || !in_doorway(cx + 0.5, cy, 0.0) || k == 0 || iy == 0;
         let strap = iy == 4 || iy == 12;
-        let crest = cx * cx + (cy - (DOOR_FLOOR + 9.0)).powi(2) <= 2.6f32.powi(2);
+        let crest = cx * cx + (cy - 9.0).powi(2) <= 2.6f32.powi(2);
         let crest_face = crest && ((iy == 18 || iy == 19) && (k == 2 || k == 3) || iy == 15 && k < 4 || iy == 16 && k == 3);
         if edge {
             return vox(0xf0c040, 0.45);
@@ -588,5 +621,362 @@ fn door_leaf(right: bool) -> Model {
         }
         // Red planks with darker grooves.
         if k % 2 == 0 { vox(0x9a1424, 0.2) } else { vox(0x7c0e1c, 0.2) }
+    })
+}
+
+// ============================================================== Christmas
+
+/// Draws a model from a picture: `rows` top row first, `#` = `body`, other characters
+/// looked up in `colors`; every voxel `depth` deep (the details only on the front).
+fn picture(rows: &'static [&'static str], depth: i32, scale: f32, body: u32, colors: &'static [(u8, u32, f32)], glow: f32) -> Model {
+    let (w, h) = (rows[0].len() as i32, rows.len() as i32);
+    Model::build(w, h, depth, scale, move |x, y, z| {
+        let c = rows[(h - 1 - y) as usize].as_bytes()[x as usize];
+        if c == b'.' {
+            return None;
+        }
+        if c != b'#' && z == depth - 1 {
+            if let Some(&(_, col, g)) = colors.iter().find(|k| k.0 == c) {
+                return vox(col, g);
+            }
+        }
+        vox(body, glow)
+    })
+}
+
+fn snowman() -> Model {
+    // Three balls of snow, coal eyes and buttons, a carrot nose, a red scarf and twig arms.
+    let balls = [(3.0, 3.2), (7.0, 2.4), (10.4, 1.9)];
+    let inside = move |x: i32, y: i32, z: i32| {
+        let (px, py, pz) = (x as f32 + 0.5 - 4.5, y as f32 + 0.5, z as f32 + 0.5 - 4.5);
+        balls.iter().any(|&(cy, r)| px * px + (py - cy).powi(2) + pz * pz <= r * r)
+    };
+    let front = move |x: i32, y: i32| (0..9).rev().find(|&z| inside(x, y, z));
+    Model::build(9, 13, 9, 0.11, move |x, y, z| {
+        if !inside(x, y, z) {
+            // Carrot nose, sticking out of the face.
+            if x == 4 && y == 10 && front(x, y).is_some_and(|f| z > f && z <= f + 2) {
+                return vox(0xf07818, 0.5);
+            }
+            // Twig arms.
+            if (y == 7 || (y == 8 && (x == 0 || x == 8))) && z == 4 && (x <= 1 || x >= 7) {
+                return vox(0x5a3a1e, 0.2);
+            }
+            return None;
+        }
+        let is_front = front(x, y) == Some(z);
+        if is_front && y == 11 && (x == 3 || x == 5) {
+            return vox(0x18181e, 0.0);
+        }
+        if is_front && y == 9 && (x == 3 || x == 5) {
+            return vox(0x18181e, 0.0);
+        }
+        if is_front && x == 4 && (y == 4 || y == 6) {
+            return vox(0x18181e, 0.0);
+        }
+        if y == 8 {
+            return if (x + z) % 3 == 0 { vox(0x2a8a40, 0.35) } else { vox(0xd02028, 0.35) };
+        }
+        vox(0xf2f6ff, 0.4)
+    })
+}
+
+fn gingerbread() -> Model {
+    const ROWS: [&str; 13] = [
+        "....###....",
+        "...#####...",
+        "..##e#e##..",
+        "..#######..",
+        "..##sss##..",
+        "...#####...",
+        "ww#######ww",
+        "###########",
+        "...##r##...",
+        "...#####...",
+        "...##g##...",
+        "...##.##...",
+        "..ww#.#ww..",
+    ];
+    picture(&ROWS, 2, 0.13, 0xb06a30, &[(b'e', 0xffffff, 0.8), (b's', 0xffffff, 0.8), (b'w', 0xffffff, 0.8), (b'r', 0xe02030, 0.8), (b'g', 0x30c050, 0.8)], 0.4)
+}
+
+fn plane() -> Model {
+    // A toy biplane-ish plane: red body, yellow wings, a blue cockpit, facing +Z.
+    Model::build(11, 5, 8, 0.11, |x, y, z| {
+        let body = (4..=6).contains(&x) && (1..=3).contains(&y) && z <= 7 && !(z == 7 && (x != 5 || y != 2));
+        let wing = y == 2 && z >= 3 && z <= 4;
+        let tail_fin = x == 5 && (y == 3 || y == 4) && z == 0;
+        let tail_plane = y == 2 && z == 0 && (2..=8).contains(&x);
+        let cockpit = x == 5 && y == 4 && (z == 4 || z == 5);
+        let wheel = y == 0 && (x == 4 || x == 6) && z == 5;
+        if cockpit {
+            return vox(0x8ad0ff, 0.6);
+        }
+        if body {
+            if z == 7 {
+                return vox(0xe0e0e8, 0.5);
+            }
+            return if z == 5 { vox(0xffffff, 0.4) } else { vox(0xd02828, 0.35) };
+        }
+        if wing {
+            return if x == 0 || x == 10 { vox(0xd02828, 0.35) } else { vox(0xf0d030, 0.4) };
+        }
+        if tail_fin || tail_plane {
+            return vox(0xd02828, 0.35);
+        }
+        if wheel {
+            return vox(0x202024, 0.1);
+        }
+        None
+    })
+}
+
+fn present_box(paper: u32, ribbon: u32) -> Model {
+    Model::build(6, 5, 6, 0.1, move |x, _, z| if x == 2 || x == 3 || z == 2 || z == 3 { vox(ribbon, 0.5) } else { vox(paper, 0.4) })
+}
+
+/// A present's lid (hinged along its back edge, z = 0) with a bow on top.
+fn present_lid(paper: u32, ribbon: u32) -> Model {
+    Model::build(6, 3, 6, 0.1, move |x, y, z| {
+        let band = x == 2 || x == 3 || z == 2 || z == 3;
+        match y {
+            0 => vox(if band { ribbon } else { paper }, 0.45),
+            1 => ((1..=4).contains(&x) && (z == 2 || z == 3) || (x == 2 || x == 3) && (1..=4).contains(&z)).then(|| Vox { color: crate::atlas::hex(ribbon), glow: 0.6 }),
+            _ => ((x == 1 || x == 4) && (z == 2 || z == 3)).then(|| Vox { color: crate::atlas::hex(ribbon), glow: 0.6 }),
+        }
+    })
+}
+
+/// A shiny Christmas ornament with a band round its middle and a gold cap.
+fn bauble(color: u32, band: u32) -> Model {
+    Model::build(7, 8, 7, 0.11, move |x, y, z| {
+        if y == 7 {
+            return ((2..=4).contains(&x) && (2..=4).contains(&z)).then(|| Vox { color: crate::atlas::hex(0xd8b040), glow: 0.5 });
+        }
+        let (px, py, pz) = (x as f32 - 3.0, y as f32 - 3.2, z as f32 - 3.0);
+        if px * px + py * py + pz * pz > 3.5 * 3.5 {
+            return None;
+        }
+        if y == 3 {
+            return vox(band, 0.7);
+        }
+        // A glint up on its front.
+        if x == 2 && y == 5 && z >= 5 {
+            return vox(0xffffff, 1.0);
+        }
+        vox(color, 0.45)
+    })
+}
+
+fn wreath() -> Model {
+    Model::build(13, 13, 2, 0.1, |x, y, z| {
+        let (dx, dy) = (x as f32 - 6.0, y as f32 - 6.5);
+        let d = (dx * dx + dy * dy).sqrt();
+        // A red bow at the bottom.
+        let bow = y <= 3 && (x as i32 - 6).abs() <= 3 - (y as i32 - 1).abs().min(1) && z == 1;
+        if bow && d >= 3.0 {
+            return vox(0xd8202a, 0.5);
+        }
+        if !(3.2..=6.4).contains(&d) {
+            return None;
+        }
+        if z == 1 && hash3(x, y, 9) > 0.82 {
+            return vox(0xff3040, 0.8);
+        }
+        if (x + y) % 3 == 0 {
+            vox(0x1c5a2a, 0.3)
+        } else {
+            vox(0x2b7a3a, 0.3)
+        }
+    })
+}
+
+fn gold_star() -> Model {
+    Model::build(11, 11, 3, 0.11, |x, y, z| {
+        let (dx, dy) = (x as f32 - 5.0, y as f32 - 4.8);
+        let r = (dx * dx + dy * dy).sqrt();
+        let a = dy.atan2(dx) - std::f32::consts::FRAC_PI_2;
+        let k = (a / std::f32::consts::TAU * 5.0).rem_euclid(1.0);
+        let reach = 2.3 + 3.4 * (1.0 - (k - 0.5).abs() * 2.0).powi(3);
+        // Thicker in the middle than at the tips.
+        let reach = if z == 1 { reach + 0.4 } else { reach - 0.6 };
+        if r > reach {
+            return None;
+        }
+        if r > reach - 0.9 {
+            vox(0xffa818, 0.9)
+        } else {
+            vox(0xffe050, 0.95)
+        }
+    })
+}
+
+fn nutcracker_head() -> Model {
+    // Face with a white beard and a tall black hat with a gold band and a red plume.
+    Model::build(6, 10, 6, 0.1, |x, y, z| {
+        if y >= 5 {
+            let hat = (1..=4).contains(&x) && (1..=4).contains(&z);
+            if y == 9 {
+                return (x == 2 && z == 2 || x == 3 && z == 3 || x == 2 && z == 3 || x == 3 && z == 2).then(|| Vox { color: crate::atlas::hex(0xe02030), glow: 0.5 });
+            }
+            if !hat {
+                return None;
+            }
+            return if y == 5 { vox(0xe8c040, 0.5) } else { vox(0x1a1a24, 0.2) };
+        }
+        let front = z == 5;
+        if front && y == 3 && (x == 1 || x == 4) {
+            return vox(0x101018, 0.0);
+        }
+        if front && y == 2 && (x == 2 || x == 3) {
+            return vox(0xd88870, 0.4);
+        }
+        if y <= 1 && (z >= 3 || x == 0 || x == 5) {
+            return if front && y == 1 && (x == 2 || x == 3) { vox(0x501018, 0.2) } else { vox(0xf4f4f4, 0.5) };
+        }
+        vox(0xf0c8a0, 0.45)
+    })
+}
+
+fn nutcracker_body() -> Model {
+    // Black boots, white trousers, a black belt with a gold buckle and a red jacket with
+    // gold buttons and epaulettes.
+    Model::build(6, 9, 4, 0.09, |x, y, z| {
+        let legs = (1..=4).contains(&x);
+        match y {
+            0 | 1 => legs.then(|| Vox { color: crate::atlas::hex(0x14141a), glow: 0.2 }),
+            2 | 3 => legs.then(|| Vox { color: crate::atlas::hex(0xf0f0f4), glow: 0.4 }),
+            4 => vox(if (x == 2 || x == 3) && z == 3 { 0xe8c040 } else { 0x14141a }, 0.3),
+            8 if x == 0 || x == 5 => vox(0xe8c040, 0.5),
+            _ if z == 3 && (x == 2 || x == 3) && (y == 5 || y == 7) => vox(0xe8c040, 0.5),
+            _ => vox(0xc81e2c, 0.35),
+        }
+    })
+}
+
+fn nutcracker_arm() -> Model {
+    Model::build(2, 9, 2, 0.09, |_, y, _| if y <= 1 { vox(0xf4f4f4, 0.45) } else { vox(0xc81e2c, 0.35) })
+}
+
+fn snow_king_head(eyes: u32, eye_glow: f32) -> Model {
+    // A huge snowman's head: coal eyes and smile, a carrot nose and an icy crown.
+    const FACE: [&str; 13] = [
+        "...............",
+        "...............",
+        "..###.....###..",
+        "..###.....###..",
+        "..###.....###..",
+        "...............",
+        "...............",
+        "...............",
+        ".#...........#.",
+        "..#.........#..",
+        "...##.#.#.##...",
+        "...............",
+        "...............",
+    ];
+    let inside = |x: i32, y: i32, z: i32| -> bool {
+        let dx = ((x as f32 - 7.0) / 7.5).abs();
+        let dy = ((y as f32 - 6.0) / 6.5).abs();
+        let dz = ((z as f32 - 9.0) / 7.5).abs();
+        dx.powf(2.6) + dy.powf(2.6) + dz.powf(2.6) <= 1.0
+    };
+    let front_z = move |x: i32, y: i32| -> i32 { (0..19).rev().find(|&z| inside(x, y, z)).unwrap_or(-1) };
+    Model::build(15, 17, 19, 0.5, move |x, y, z| {
+        if y >= 12 {
+            let r = (((x as f32 - 7.0).powi(2) + (z as f32 - 9.0).powi(2)) as f32).sqrt();
+            let ang = (z as f32 - 9.0).atan2(x as f32 - 7.0);
+            let spike = ((ang / std::f32::consts::TAU * 8.0).rem_euclid(1.0)) < 0.4;
+            if (3.2..4.6).contains(&r) && (y == 12 || y == 13 || (y == 14 && spike) || (y == 15 && spike && r < 4.0)) {
+                if y == 13 && spike && !inside(x, y, z) {
+                    return vox(0xff4090, 1.0);
+                }
+                return vox(0xa8e0ff, 0.7);
+            }
+        }
+        let fz = front_z(x, y);
+        if !inside(x, y, z) {
+            // The carrot nose.
+            let nose = (x == 7 && y == 6 && z > fz && z <= fz + 3) || ((6..=8).contains(&x) && (5..=7).contains(&y) && z == fz + 1);
+            return (nose && fz >= 0).then(|| Vox { color: crate::atlas::hex(0xf07818), glow: 0.55 });
+        }
+        let row = 12 - y;
+        let coal = row >= 0 && row < 13 && FACE[row as usize].as_bytes()[x as usize] == b'#';
+        if coal && (z == fz || z == fz - 1) {
+            return vox(eyes, eye_glow);
+        }
+        vox(0xf2f6ff, 0.42)
+    })
+}
+
+fn snow_king_body() -> Model {
+    // A great ball of snow with a striped scarf round its neck and coal buttons.
+    Model::build(13, 9, 13, 0.5, |x, y, z| {
+        let r = (((x as f32 - 6.0).powi(2) + (z as f32 - 6.0).powi(2)) as f32).sqrt();
+        let max_r = (6.4f32.powi(2) - (y as f32 - 2.5).powi(2)).max(0.0).sqrt();
+        if r > max_r {
+            return None;
+        }
+        if y >= 7 {
+            return if (x + z + y) % 4 < 2 { vox(0xd02028, 0.45) } else { vox(0x2a8a40, 0.45) };
+        }
+        if r < max_r - 1.2 {
+            return None; // hollow inside
+        }
+        if z >= 11 && x == 6 && (y == 2 || y == 4) {
+            return vox(0x202028, 0.0);
+        }
+        vox(0xeef4ff, 0.42)
+    })
+}
+
+fn mitten() -> Model {
+    Model::build(5, 5, 4, 0.42, |x, y, _| {
+        if y == 0 {
+            return (x < 4).then(|| Vox { color: crate::atlas::hex(0xf4f4f8), glow: 0.6 });
+        }
+        if x == 4 {
+            return (y == 2 || y == 3).then(|| Vox { color: crate::atlas::hex(0xd02028), glow: 0.5 });
+        }
+        if y == 4 && (x == 0 || x == 3) {
+            return None;
+        }
+        vox(0xd02028, 0.5)
+    })
+}
+
+/// One leaf of the Snow King's doors, wrapped like a giant present: red paper with
+/// white dots, a gold ribbon down the middle and across, and half of a big bow.
+fn present_door(right: bool) -> Model {
+    use crate::world::{in_doorway, DOOR_HALF};
+    let vw = (DOOR_HALF * 2.0) as i32;
+    let vh = 26;
+    Model::build(vw, vh, 1, 0.5, move |ix, iy, _| {
+        let k = if right { ix } else { vw - 1 - ix };
+        let cx = k as f32 * 0.5 + 0.25;
+        let cy = iy as f32 * 0.5 + 0.25;
+        if !in_doorway(cx, cy, 0.0) {
+            return None;
+        }
+        let edge = !in_doorway(cx, cy + 0.5, 0.0) || !in_doorway(cx + 0.5, cy, 0.0) || iy == 0;
+        let by = 9.0;
+        let lobe = (cx - 1.6).powi(2) / 1.9f32.powi(2) + (cy - by).powi(2) / 1.2f32.powi(2) <= 1.0;
+        let knot = cx < 0.8 && (cy - by).abs() < 0.8;
+        if edge {
+            return vox(0xf0c040, 0.45);
+        }
+        if knot {
+            return vox(0xc89020, 0.6);
+        }
+        if lobe {
+            return vox(0xffe680, 0.8);
+        }
+        if k <= 1 || iy == 6 || iy == 7 {
+            return vox(0xe8b830, 0.5);
+        }
+        if k % 4 == 2 && iy % 4 == 2 {
+            return vox(0xf4f0f0, 0.3);
+        }
+        if k % 2 == 0 { vox(0xb01828, 0.2) } else { vox(0x9a1424, 0.2) }
     })
 }

@@ -4,25 +4,35 @@
 # Steam client to add it to the library. It shares the official client's key, so a Frame paired
 # with either one works with both.
 #
-#   frame/upload.sh [HOST] [--run] [--no-build]
+#   frame/upload.sh [HOST] [--run] [--no-build] [--level NAME]
 #
 # HOST defaults to frame.local (the Frame's hostname is "frame" unless you changed it).
 # --run starts the game on the headset after the upload.
+# --level christmas installs the Christmas level as a game of its own in the library
+# ("Devkit Game: HollyHollow"), next to Haunted Hollow; it starts with --level christmas.
 set -euo pipefail
 
-host=frame.local run=0 build=1
-for a in "$@"; do
-    case $a in
+host=frame.local run=0 build=1 level=halloween
+while [ $# -gt 0 ]; do
+    case $1 in
         --run) run=1 ;;
         --no-build) build=0 ;;
-        -*) echo "unknown option $a" >&2; exit 2 ;;
-        *) host=$a ;;
+        --level) shift; level=${1:-} ;;
+        --level=*) level=${1#--level=} ;;
+        -*) echo "unknown option $1" >&2; exit 2 ;;
+        *) host=$1 ;;
     esac
+    shift
 done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-# Steam refuses devkit game IDs with a hyphen ("missing/invalid arguments").
-gameid=HauntedHollow
+# Each level is its own entry in the headset's library. (Steam refuses devkit game IDs with
+# a hyphen: "missing/invalid arguments".)
+case $level in
+    halloween) gameid=HauntedHollow ;;
+    christmas) gameid=HollyHollow ;;
+    *) echo "unknown level $level (halloween or christmas)" >&2; exit 2 ;;
+esac
 # The runtime the devkit client offers for native arm64 Linux games. The build targets Debian 11's
 # glibc, so it runs in this and in the older 3.0 (sniper) arm64 runtime.
 runtime=${FRAME_RUNTIME:-SteamLinuxRuntime_4-arm64}
@@ -83,17 +93,18 @@ rsync -az --delete --chmod=Du=rwx,Dgo=rx,Fu=rwx,Fog=rx -e "$rsh" \
     "$root/target/frame/haunted-hollow/" "$login@$host:$dest/"
 
 parms=$(python3 -c 'import json,sys; print(json.dumps({
-    "gameid": sys.argv[1], "directory": sys.argv[2], "argv": ["haunted-hollow.sh"], "env": {},
+    "gameid": sys.argv[1], "directory": sys.argv[2], "argv": ["haunted-hollow.sh", "--level", sys.argv[4]], "env": {},
     "settings": {"steam_play": "0", "compat_tool": sys.argv[3]}, "force_appid": "", "lepton_args": ""}))' \
-    $gameid "$dest" "$runtime")
+    $gameid "$dest" "$runtime" "$level")
 result=$(remote python3 devkit-utils/steam-client-create-shortcut --parms "${parms@Q}")
 if echo "$result" | json ".get('error') or ''" | grep .; then
     exit 1
 fi
 echo "Installed: it is in the headset's library as \"Devkit Game: $gameid\"."
 
-# Library artwork (frame/art.py makes it). Not fatal: the game works without it.
-if [ -d "$root/frame/art" ]; then
+# Library artwork (frame/art.py makes it; it's Haunted Hollow's). Not fatal: the game works
+# without it.
+if [ -d "$root/frame/art" ] && [ "$level" = halloween ]; then
     rsync -az --delete -e "$rsh" "$root/frame/steam-art.py" "$root/frame/art" "$login@$host:.cache/$gameid-art/"
     remote python3 .cache/$gameid-art/steam-art.py $gameid .cache/$gameid-art/art ||
         echo "(could not install the library artwork)"

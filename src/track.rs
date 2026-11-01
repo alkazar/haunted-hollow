@@ -1,7 +1,9 @@
 //! The roller-coaster track: a centripetal Catmull-Rom spline through hand-placed
 //! control points with a speed profile, normalised so the ride from the station
-//! to the boss stop takes exactly `RIDE_SECONDS`.
+//! to the boss stop takes exactly `RIDE_SECONDS`. Each level has its own track.
 
+use crate::level::Level;
+use crate::world::Zone;
 use glam::Vec3;
 
 pub const RIDE_SECONDS: f32 = 120.0;
@@ -46,6 +48,56 @@ const POINTS: &[([f32; 3], f32)] = &[
     ([0.0, -17.0, 296.0], 1.0), // ...and out down the endless exit hall
 ];
 const STOP_INDEX: usize = 29;
+
+/// Holly Hollow: (position of rail surface, relative speed).
+const XMAS_POINTS: &[([f32; 3], f32)] = &[
+    ([0.0, 1.0, -36.0], 0.45), // 0 station in the forest
+    ([0.0, 1.0, -26.0], 0.7),
+    ([-8.0, 1.0, -14.0], 0.95),
+    ([-20.0, 1.0, -4.0], 1.0),
+    ([-26.0, 1.6, 10.0], 1.0), // 4 over the bridge across the frozen creek
+    ([-20.0, 1.0, 24.0], 1.0),
+    ([-6.0, 1.0, 32.0], 1.0), // 6 through the village gate and down the street
+    ([10.0, 1.0, 34.0], 1.0),
+    ([26.0, 1.0, 38.0], 1.0),
+    ([38.0, 1.0, 48.0], 0.9),
+    ([42.0, 4.0, 60.0], 0.8), // 10 the lift up onto the rooftops
+    ([38.0, 10.0, 70.0], 0.8),
+    ([30.0, 15.0, 77.0], 0.85),
+    ([18.0, 17.0, 81.0], 1.0),
+    ([6.0, 17.0, 84.0], 1.0),
+    ([-4.0, 17.0, 90.0], 0.95),
+    ([-10.0, 15.0, 95.0], 1.0), // 16 down the factory chimney!
+    ([-12.0, 8.0, 99.0], 2.0),
+    ([-13.0, 1.0, 105.0], 2.2),
+    ([-20.0, 1.5, 116.0], 1.0), // 19 the toy factory
+    ([-30.0, 4.0, 126.0], 0.8),
+    ([-26.0, 7.0, 137.0], 0.75),
+    ([-12.0, 7.0, 141.0], 0.8),
+    ([-2.0, 3.0, 146.0], 0.9),
+    ([4.0, 1.5, 158.0], 1.0), // 24 out across the frozen lake
+    ([18.0, 1.5, 163.0], 0.95),
+    ([29.0, 1.5, 174.0], 0.95),
+    ([24.0, 1.5, 187.0], 1.0),
+    ([16.0, -3.0, 192.0], 1.6), // 28 down through a crack in the ice
+    ([9.0, -12.0, 196.0], 2.4),
+    ([3.0, -21.0, 200.0], 2.0),
+    ([-6.0, -24.0, 208.0], 1.2), // 31 the crystal cavern
+    ([-3.0, -24.0, 218.0], 1.0),
+    ([0.0, -24.0, 226.0], 0.8),
+    ([0.0, -24.0, 232.0], 0.6), // 34 the Snow King's throne room
+    ([0.0, -24.0, 238.0], 0.25), // 35 STOP: boss fight
+    ([0.0, -24.0, 248.0], 0.8),
+    ([0.0, -24.0, 258.0], 1.0),
+    ([0.0, -24.0, 266.0], 1.0), // through the doors...
+    ([0.0, -24.0, 276.0], 1.0),
+    ([0.0, -24.0, 286.0], 1.0),
+    ([0.0, -24.0, 350.0], 1.0), // ...and out down the long hall
+];
+const XMAS_STOP_INDEX: usize = 35;
+/// The control point where each of Holly Hollow's sections (`Zone`s) starts.
+const XMAS_SECTIONS: &[usize] = &[0, 6, 10, 16, 19, 24, 28, 31, 34];
+
 const SUBDIV: usize = 48;
 
 pub struct Track {
@@ -54,6 +106,9 @@ pub struct Track {
     times: Vec<f32>,
     pub stop_dist: f32,
     pub total: f32,
+    /// Distance along the track where each section starts (empty when the level's
+    /// sections aren't laid out along its track, see `zone_at_dist`).
+    sections: Vec<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,8 +136,16 @@ fn cr_point(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
 }
 
 impl Track {
-    pub fn new() -> Track {
-        let cp: Vec<Vec3> = POINTS.iter().map(|(p, _)| Vec3::from(*p)).collect();
+    pub fn new(level: Level) -> Track {
+        let (points, stop, sections) = match level {
+            Level::Halloween => (POINTS, STOP_INDEX, &[][..]),
+            Level::Christmas => (XMAS_POINTS, XMAS_STOP_INDEX, XMAS_SECTIONS),
+        };
+        Self::build(points, stop, sections)
+    }
+
+    fn build(points: &[([f32; 3], f32)], stop: usize, sections: &[usize]) -> Track {
+        let cp: Vec<Vec3> = points.iter().map(|(p, _)| Vec3::from(*p)).collect();
         let n = cp.len();
         let get = |i: isize| -> Vec3 {
             if i < 0 {
@@ -101,11 +164,11 @@ impl Track {
                 pts.push(cr_point(get(i as isize - 1), get(i as isize), get(i as isize + 1), get(i as isize + 2), t));
                 // Smoothstep between control-point speeds.
                 let e = t * t * (3.0 - 2.0 * t);
-                speeds.push(POINTS[i].1 + (POINTS[i + 1].1 - POINTS[i].1) * e);
+                speeds.push(points[i].1 + (points[i + 1].1 - points[i].1) * e);
             }
         }
         pts.push(cp[n - 1]);
-        speeds.push(POINTS[n - 1].1);
+        speeds.push(points[n - 1].1);
 
         let mut dist = vec![0.0];
         let mut raw_t = vec![0.0];
@@ -115,10 +178,39 @@ impl Track {
             let v = 0.5 * (speeds[i] + speeds[i - 1]);
             raw_t.push(raw_t[i - 1] + ds / v.max(0.05));
         }
-        let stop_i = STOP_INDEX * SUBDIV;
+        let stop_i = stop * SUBDIV;
         let k = raw_t[stop_i] / RIDE_SECONDS;
         let times = raw_t.iter().map(|t| t / k).collect();
-        Track { stop_dist: dist[stop_i], total: *dist.last().unwrap(), pts, dist, times }
+        let sections = sections.iter().map(|&i| dist[i * SUBDIV]).collect();
+        Track { stop_dist: dist[stop_i], total: *dist.last().unwrap(), pts, dist, times, sections }
+    }
+
+    /// Ride time when the cart is `d` along the track.
+    pub fn time_at_dist(&self, d: f32) -> f32 {
+        let i = self.dist.partition_point(|&x| x < d).min(self.dist.len() - 1);
+        self.times[i]
+    }
+
+    /// Ride time when the cart enters section `z`.
+    pub fn section_time(&self, z: Zone) -> f32 {
+        self.sections.get(z.0 as usize).map_or(RIDE_SECONDS, |&d| self.time_at_dist(d))
+    }
+
+    /// The section the cart is in, `d` along the track.
+    pub fn zone_at_dist(&self, d: f32) -> Zone {
+        Zone(self.sections.iter().take_while(|&&s| s <= d).count().saturating_sub(1) as u8)
+    }
+
+    /// The section of the nearest bit of track to a point.
+    pub fn zone_near(&self, p: Vec3) -> Zone {
+        let mut best = (f32::MAX, 0.0);
+        for i in (0..self.pts.len()).step_by(4) {
+            let d2 = self.pts[i].distance_squared(p);
+            if d2 < best.0 {
+                best = (d2, self.dist[i]);
+            }
+        }
+        self.zone_at_dist(best.1)
     }
 
     pub fn pos_at(&self, d: f32) -> Vec3 {

@@ -23,6 +23,7 @@ use crate::mesh::{Model, Models};
 use crate::synth::{self, Drum, Ev, Inst};
 use crate::track::{Track, RIDE_SECONDS};
 use crate::vk::Vertex;
+use crate::level::Level;
 use crate::world::{zone_at, World};
 use glam::{Vec2, Vec3};
 use std::collections::HashMap;
@@ -618,7 +619,7 @@ fn export_track(t: &Target, out_dir: &str, game: &Game, track: &Track) -> std::i
         dir.to_array().iter().for_each(|&v| o.i16(fixed(v)));
         up.to_array().iter().for_each(|&v| o.i16(fixed(v)));
         o.u16((d / SEG_LEN) as u16);
-        o.u8(zone_at(track.frame_at(d).pos) as u8);
+        o.u8(zone_at(track.frame_at(d).pos).0);
         o.u8(byte(speed * 16.0));
     };
     // Fixed poses: the title camera's eye (it looks around in code), the boss stop,
@@ -638,7 +639,7 @@ fn export_track(t: &Target, out_dir: &str, game: &Game, track: &Track) -> std::i
         pose(&mut o, eye, dir, up, d, speed);
     }
     // The outro: the cart rolls out through the doors, first turning to face them.
-    let door = Vec3::new(0.0, crate::world::DOOR_FLOOR + 6.5, crate::world::DOOR_Z);
+    let door = Level::Halloween.doors().centre();
     for i in 0..n_outro {
         let t = i as f32 / CAM_HZ;
         let d = track.stop_dist + 2.6 * t * t;
@@ -690,7 +691,7 @@ fn write_model(o: &mut Out, m: &Model) {
 
 /// models.bin: every voxel model, in the order of `enum model` in the C code.
 fn export_models(t: &Target, dir: &str) -> std::io::Result<()> {
-    let m = Models::new();
+    let m = Models::new(Level::Halloween);
     let list: [&Model; 18] = [
         &m.ghost,
         &m.bat_body,
@@ -750,9 +751,9 @@ fn export_spawns(t: &Target, dir: &str) -> std::io::Result<()> {
     o.tag(b"SPN2");
     let mut sets = vec![];
     for players in 1..=t.players {
-        let track = Track::new();
-        let world = crate::world::generate(&track);
-        sets.push(Game::record_spawns(track, world, players, SCREEN));
+        let track = Track::new(Level::Halloween);
+        let world = crate::world::generate(&track, Level::Halloween);
+        sets.push(Game::record_spawns(track, world, Level::Halloween, players, SCREEN));
     }
     let summons = &sets[t.players - 1].1;
     for n in 0..4 {
@@ -815,7 +816,7 @@ fn export_light(t: &Target, dir: &str, world: &World) -> std::io::Result<()> {
 
 /// sky.bin: moon, halo and stars as quads in world units (never fogged).
 fn export_sky(t: &Target, dir: &str) -> std::io::Result<()> {
-    let qs = quads(&crate::world::sky_mesh());
+    let qs = quads(&crate::world::sky_mesh(Level::Halloween));
     let mut o = Out::new(t);
     o.tag(b"SKY1");
     o.u32(qs.len() as u32);
@@ -1188,7 +1189,7 @@ fn pcm_be(b: &synth::Buf, rate: f32, gain: f32) -> Vec<u8> {
 /// (offset, bytes, sample rate, loops), offsets from the start of the file; the data
 /// is 32-byte aligned for the Wii's sound library.
 fn export_wii_sound(t: &Target, dir: &str) -> std::io::Result<()> {
-    let bank = crate::audio::Bank::build();
+    let bank = crate::audio::Bank::build(Level::Halloween);
     let mut clips: Vec<(Vec<u8>, f32, bool)> = vec![];
     for b in bank.sfx() {
         clips.push((pcm_be(b, WII_SFX_RATE, 1.0), WII_SFX_RATE, false));
@@ -1225,11 +1226,11 @@ pub fn export(t: &Target, dir: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let t0 = std::time::Instant::now();
     eprintln!("exporting {} data to {dir}", if t.big_endian { "Wii" } else { "PS1" });
-    let track = Track::new();
-    let world = crate::world::generate(&track);
+    let track = Track::new(Level::Halloween);
+    let world = crate::world::generate(&track, Level::Halloween);
     export_world(t, dir, &world, &track)?;
     export_light(t, dir, &world)?;
-    let game = Game::new(Track::new(), world, false, 0);
+    let game = Game::new(Track::new(Level::Halloween), world, Level::Halloween, false, 0);
     export_track(t, dir, &game, &track)?;
     export_scenery(t, dir, &game)?;
     export_models(t, dir)?;

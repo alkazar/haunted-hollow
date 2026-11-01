@@ -204,13 +204,15 @@ pub fn drum(buf: &mut Buf, start: f32, d: Drum, vol: f32, pan: f32, wrap: bool, 
 
 pub struct Song {
     pub bpm: f32,
+    /// Beats in a bar (the bass and drum patterns are spread evenly over it).
+    pub beats: f32,
     /// One chord per bar: (root note, minor?)
     pub chords: &'static [(&'static str, bool)],
     /// "NOTE beats" pairs separated by spaces; R = rest.
     pub melody: &'static str,
     pub lead: Inst,
     pub lead_vol: f32,
-    pub bass: &'static str, // 16 steps per bar: r root, f fifth, o octave, . rest
+    pub bass: &'static str, // steps per bar (usually 16): r root, f fifth, o octave, t third, . rest
     pub kick: &'static str,
     pub snare: &'static str,
     pub hat: &'static str,
@@ -246,12 +248,13 @@ pub enum Ev {
 /// and the length of the loop in seconds.
 pub fn song_events(s: &Song) -> (Vec<Ev>, f32) {
     let beat = 60.0 / s.bpm;
-    let bar = beat * 4.0;
+    let bar = beat * s.beats;
     let bars = s.chords.len();
     let pass_len = bar * bars as f32;
     let total = pass_len * s.passes as f32;
     let mel = parse_melody(s.melody);
-    let step = bar / 16.0;
+    let step = bar / s.bass.len().max(1) as f32;
+    let drum_step = bar / s.kick.len().max(1) as f32;
     let mut ev = vec![];
     let mut note = |t, freq, dur, inst, vol, pan| ev.push(Ev::Note { t, freq, dur, inst, vol, pan });
     let mut drums = vec![];
@@ -292,7 +295,7 @@ pub fn song_events(s: &Song) -> (Vec<Ev>, f32) {
             }
             // Drums.
             for (i, ((k, sn), h)) in s.kick.bytes().zip(s.snare.bytes()).zip(s.hat.bytes()).enumerate() {
-                let t = tb + i as f32 * step;
+                let t = tb + i as f32 * drum_step;
                 let seed = (pass * 1000 + bi as u32 * 16 + i as u32) * 7919 + 1;
                 let mut drum = |drum, vol, pan, seed| drums.push(Ev::Drum { t, drum, vol, pan, seed });
                 if k == b'x' {
@@ -342,6 +345,7 @@ pub fn render_song(s: &Song, looping: bool) -> Buf {
 
 pub const TITLE: Song = Song {
     bpm: 84.0,
+    beats: 4.0,
     chords: &[("D", true), ("Bb", false), ("G", true), ("A", false)],
     melody: "A4 1 D5 1 F5 1.5 E5 .5  D5 1 F5 1 Bb4 2  G4 1 Bb4 1 D5 1.5 C#5 .5  E5 2 A4 2",
     lead: Inst::Theremin,
@@ -360,6 +364,7 @@ pub const RIDE: Song = Song {
     // A creepy music box over a dark pad: D harmonic minor, a slow clock-tick beat,
     // a chromatic creep in the melody and a spooky E-flat chord before each turnaround.
     bpm: 108.0,
+    beats: 4.0,
     chords: &[("D", true), ("D", true), ("Bb", false), ("A", false), ("G", true), ("D", true), ("Eb", false), ("A", false)],
     melody: "D5 .5 F5 .5 A5 .5 G#5 .5 A5 1 F5 1  E5 .5 F5 .5 E5 .5 D5 .5 C#5 1 A4 1  \
              Bb4 .5 D5 .5 F5 .5 E5 .5 F5 1 D5 1  C#5 .5 E5 .5 G5 .5 F5 .5 E5 2  \
@@ -379,6 +384,7 @@ pub const RIDE: Song = Song {
 
 pub const BOSS: Song = Song {
     bpm: 156.0,
+    beats: 4.0,
     chords: &[("D", true), ("D", true), ("Eb", false), ("Eb", false), ("D", true), ("D", true), ("A", false), ("A", false)],
     melody: "D5 .5 D5 .5 F5 .5 D5 .5 A5 1 G#5 1  A5 .5 F5 .5 D5 .5 F5 .5 E5 1 D5 1  \
              Eb5 .5 Eb5 .5 G5 .5 Eb5 .5 Bb5 1 A5 1  G5 .5 Eb5 .5 Bb4 .5 Eb5 .5 D5 2  \
@@ -398,6 +404,7 @@ pub const BOSS: Song = Song {
 
 pub const RESULTS: Song = Song {
     bpm: 120.0,
+    beats: 4.0,
     chords: &[("D", false), ("G", false), ("A", false), ("D", false)],
     melody: "F#5 .5 A5 .5 D6 1 A5 .5 F#5 .5 D5 1  G5 .5 B5 .5 D6 1 B5 .5 G5 .5 B5 1  \
              A5 .5 C#6 .5 E6 1 C#6 .5 A5 .5 E5 1  D6 .5 A5 .5 F#5 .5 A5 .5 D6 2",
@@ -430,10 +437,131 @@ pub fn victory_events() -> Vec<Ev> {
 }
 
 pub fn victory() -> Buf {
+    render_fanfare(&victory_events())
+}
+
+fn render_fanfare(events: &[Ev]) -> Buf {
     let mut b = Buf::new(3.5);
-    render_events(&mut b, &victory_events(), false);
+    render_events(&mut b, events, false);
     b.normalize(0.85);
     b
+}
+
+// ---------------------------------------------------------------- Christmas
+// Traditional carols (all long in the public domain), arranged for the synth.
+
+/// Title: "Jingle Bells" (the chorus), on bells over sleigh-bell hats.
+pub const XMAS_TITLE: Song = Song {
+    bpm: 132.0,
+    beats: 4.0,
+    chords: &[
+        ("G", false), ("G", false), ("G", false), ("G", false), ("C", false), ("G", false), ("A", false), ("D", false),
+        ("G", false), ("G", false), ("G", false), ("G", false), ("C", false), ("G", false), ("D", false), ("G", false),
+    ],
+    melody: "B5 1 B5 1 B5 2  B5 1 B5 1 B5 2  B5 1 D6 1 G5 1.5 A5 .5  B5 4  \
+             C6 1 C6 1 C6 1.5 C6 .5  C6 1 B5 1 B5 1 B5 .5 B5 .5  B5 1 A5 1 A5 1 B5 1  A5 2 D6 2  \
+             B5 1 B5 1 B5 2  B5 1 B5 1 B5 2  B5 1 D6 1 G5 1.5 A5 .5  B5 4  \
+             C6 1 C6 1 C6 1.5 C6 .5  C6 1 B5 1 B5 1 B5 .5 B5 .5  D6 1 D6 1 C6 1 A5 1  G5 4",
+    lead: Inst::Bell,
+    lead_vol: 0.8,
+    bass: "r.......f.......",
+    kick: "x.......x.......",
+    snare: "....c.......c...",
+    hat: "x.xxx.xxx.xxx.xx",
+    organ_vol: 0.16,
+    chord_inst: Inst::Pad,
+    bells: false,
+    passes: 1,
+};
+
+/// The ride: "Deck the Halls", on a music box.
+pub const XMAS_RIDE: Song = Song {
+    bpm: 126.0,
+    beats: 4.0,
+    chords: &[
+        ("G", false), ("G", false), ("D", false), ("G", false), ("G", false), ("G", false), ("D", false), ("G", false),
+        ("D", false), ("D", false), ("A", false), ("D", false), ("G", false), ("G", false), ("C", false), ("G", false),
+    ],
+    melody: "D6 1.5 C6 .5 B5 1 A5 1  G5 1 A5 1 B5 1 G5 1  A5 .5 B5 .5 C6 .5 A5 .5 B5 1.5 A5 .5  G5 1 F#5 1 G5 2  \
+             D6 1.5 C6 .5 B5 1 A5 1  G5 1 A5 1 B5 1 G5 1  A5 .5 B5 .5 C6 .5 A5 .5 B5 1.5 A5 .5  G5 1 F#5 1 G5 2  \
+             A5 1.5 B5 .5 C6 1 A5 1  B5 1.5 C6 .5 D6 1 A5 1  B5 .5 C#6 .5 D6 1 E6 .5 F#6 .5 G6 1  F#6 1 E6 1 D6 2  \
+             D6 1.5 C6 .5 B5 1 A5 1  G5 1 A5 1 B5 1 G5 1  E6 .5 E6 .5 E6 .5 E6 .5 D6 1.5 C6 .5  B5 1 A5 1 G5 2",
+    lead: Inst::Xylo,
+    lead_vol: 0.95,
+    bass: "r...f...r...f...",
+    kick: "x.......x.......",
+    snare: "....x.......x...",
+    hat: "x.x.x.x.x.x.x.x.",
+    organ_vol: 0.22,
+    chord_inst: Inst::Pad,
+    bells: true,
+    passes: 2,
+};
+
+/// The Snow King: "God Rest Ye Merry Gentlemen", fast and brassy in E minor.
+pub const XMAS_BOSS: Song = Song {
+    bpm: 168.0,
+    beats: 4.0,
+    chords: &[
+        ("E", true), ("E", true), ("B", false), ("E", true), ("E", true), ("E", true), ("B", false), ("E", true),
+        ("C", false), ("G", false), ("A", true), ("B", false), ("G", false), ("D", false), ("A", true), ("E", true),
+    ],
+    melody: "E5 1 E5 1 B5 1 B5 1  A5 1 G5 1 F#5 1 E5 1  D5 1 E5 1 F#5 1 G5 1  A5 1 B5 3  \
+             E5 1 E5 1 B5 1 B5 1  A5 1 G5 1 F#5 1 E5 1  D5 1 E5 1 F#5 1 G5 1  A5 1 B5 3  \
+             B5 1 C6 1 A5 1 B5 1  C6 1 D6 1 E6 1 B5 1  A5 1 G5 1 E5 1 F#5 1  G5 2 F#5 1 E5 1  \
+             G5 1 F#5 .5 E5 .5 D5 1 G5 1  F#5 1 G5 1 A5 1 B5 1  C6 1 B5 1 A5 1 G5 1  F#5 1 E5 3",
+    lead: Inst::Brass,
+    lead_vol: 0.6,
+    bass: "r.r.r.r.o.r.r.f.",
+    kick: "x...x...x...x.t.",
+    snare: "....x.......x...",
+    hat: "x.x.x.x.x.x.x.x.",
+    organ_vol: 0.12,
+    chord_inst: Inst::Organ,
+    bells: true,
+    passes: 1,
+};
+
+/// The scores: "We Wish You a Merry Christmas", in waltz time.
+pub const XMAS_RESULTS: Song = Song {
+    bpm: 150.0,
+    beats: 3.0,
+    chords: &[("G", false), ("C", false), ("A", false), ("D", false), ("B", false), ("E", true), ("C", false), ("G", false)],
+    melody: "G5 1 G5 .5 A5 .5 G5 .5 F#5 .5  E5 1 E5 1 E5 1  A5 1 A5 .5 B5 .5 A5 .5 G5 .5  F#5 1 D5 1 D5 1  \
+             B5 1 B5 .5 C6 .5 B5 .5 A5 .5  G5 1 E5 1 D5 .5 D5 .5  E5 1 A5 1 F#5 1  G5 2 D5 1",
+    lead: Inst::Chip,
+    lead_vol: 0.6,
+    bass: "r...f...f...",
+    kick: "x...........",
+    snare: "....c...c...",
+    hat: "..x...x...x.",
+    organ_vol: 0.0,
+    chord_inst: Inst::Organ,
+    bells: true,
+    passes: 2,
+};
+
+/// The Christmas victory fanfare: the opening of "Joy to the World".
+pub fn xmas_victory_events() -> Vec<Ev> {
+    let mut ev = vec![];
+    let q = 0.22;
+    let seq = [("D6", 0.0, 1.5), ("C#6", 1.5, 0.5), ("B5", 2.0, 1.0), ("A5", 3.0, 1.5), ("G5", 4.5, 0.5), ("F#5", 5.0, 1.0), ("E5", 6.0, 1.0), ("D5", 7.0, 3.0)];
+    for (n, t, d) in seq {
+        let (t, d) = (t * q, d * q);
+        ev.push(Ev::Note { t, freq: note_freq(n), dur: d * 0.9, inst: Inst::Brass, vol: 0.7, pan: 0.0 });
+        ev.push(Ev::Note { t, freq: note_freq(n) * 2.0, dur: d, inst: Inst::Bell, vol: 0.3, pan: 0.3 });
+    }
+    let end = 7.0 * q;
+    for n in ["D4", "F#4", "A4"] {
+        ev.push(Ev::Note { t: end, freq: note_freq(n), dur: 1.4, inst: Inst::Organ, vol: 0.3, pan: -0.3 });
+    }
+    ev.push(Ev::Drum { t: end, drum: Drum::Kick, vol: 0.8, pan: 0.0, seed: 3 });
+    ev.push(Ev::Drum { t: end, drum: Drum::Clap, vol: 0.6, pan: 0.0, seed: 5 });
+    ev
+}
+
+pub fn xmas_victory() -> Buf {
+    render_fanfare(&xmas_victory_events())
 }
 
 // ============================================================== sound effects
@@ -773,4 +901,28 @@ pub fn write_wav(path: &str, b: &Buf) -> std::io::Result<()> {
         out.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
     }
     std::fs::write(path, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_melody_fills_its_bars() {
+        for (name, s) in [
+            ("title", &TITLE),
+            ("ride", &RIDE),
+            ("boss", &BOSS),
+            ("results", &RESULTS),
+            ("xmas title", &XMAS_TITLE),
+            ("xmas ride", &XMAS_RIDE),
+            ("xmas boss", &XMAS_BOSS),
+            ("xmas results", &XMAS_RESULTS),
+        ] {
+            let beats: f32 = parse_melody(s.melody).iter().map(|n| n.1).sum();
+            assert_eq!(beats, s.beats * s.chords.len() as f32, "{name}: the melody is {beats} beats long");
+            assert_eq!(s.kick.len(), s.snare.len(), "{name}");
+            assert_eq!(s.kick.len(), s.hat.len(), "{name}");
+        }
+    }
 }

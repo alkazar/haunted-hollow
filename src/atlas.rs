@@ -62,6 +62,35 @@ pub const T_SHIELD: u8 = 54;
 pub const T_GOLD: u8 = 55;
 pub const T_MIRROR: u8 = 56;
 pub const T_GRAVE_PLAIN: u8 = 57;
+// Christmas.
+pub const T_SNOW_TOP: u8 = 58;
+pub const T_SNOW_SIDE: u8 = 59;
+pub const T_ICE: u8 = 60;
+pub const T_ICE_BRICK: u8 = 61;
+pub const T_PINE: u8 = 62;
+pub const T_PINE_SNOW: u8 = 63;
+pub const T_CANDY_CANE: u8 = 64;
+pub const T_PRESENT_RED: u8 = 65;
+pub const T_PRESENT_RED_TOP: u8 = 66;
+pub const T_PRESENT_GREEN: u8 = 67;
+pub const T_PRESENT_GREEN_TOP: u8 = 68;
+pub const T_GINGERBREAD: u8 = 69;
+pub const T_GARLAND: u8 = 70;
+pub const T_STOCKING: u8 = 71;
+pub const T_WREATH: u8 = 72;
+pub const T_ICICLE: u8 = 73;
+pub const T_ICE_CRYSTAL: u8 = 74;
+pub const T_XSTAR: u8 = 75;
+pub const T_WALL_RED: u8 = 76;
+pub const T_WALL_PINE: u8 = 77;
+pub const T_ROOF_RED: u8 = 78;
+pub const T_TOYSHELF: u8 = 79;
+pub const T_SNOWMAN_FACE: u8 = 80;
+pub const T_XMAS_ART: u8 = 81;
+pub const T_XMAS_ART2: u8 = 82;
+pub const T_XMAS_ART3: u8 = 83;
+pub const T_FROSTING: u8 = 84;
+pub const T_BRICK: u8 = 85;
 
 /// UV rectangle (u0, v0, u1, v1) for a tile.
 pub fn tile_uv(t: u8) -> [f32; 4] {
@@ -605,6 +634,8 @@ pub fn build() -> Vec<u8> {
         (mul(hex(0xf4efd0), if crater { 0.85 } else { 1.0 }), 1.0)
     });
 
+    christmas_tiles(&mut p);
+
     // Font: 8x8 glyphs, 32 per row, starting at y = 128.
     for c in 0u32..128 {
         if let Some(rows) = font8x8::legacy::BASIC_LEGACY.get(c as usize) {
@@ -621,4 +652,291 @@ pub fn build() -> Vec<u8> {
         }
     }
     p.px
+}
+
+/// The Christmas level's tiles.
+fn christmas_tiles(p: &mut Painter) {
+    let snow = hex(0xeef4ff);
+    p.tile(T_SNOW_TOP, move |x, y| {
+        let sparkle = hash(x, y, 101) > 0.96;
+        let c = if sparkle { hex(0xffffff) } else { mul(snow, 0.9 + hash(x / 2, y / 2, 102) * 0.08 + hash(x, y, 103) * 0.04) };
+        (c, 1.0)
+    });
+    p.tile(T_SNOW_SIDE, move |x, y| {
+        // Snow drifts down over the dirt in a wavy edge.
+        let edge = 4 + (hash(x / 2, 0, 104) * 3.0) as i32;
+        if y < edge {
+            (mul(snow, 0.88 + hash(x, y, 105) * 0.1), 1.0)
+        } else {
+            (mul(hex(0x6b4a2f), 0.84 + hash(x, y, 2) * 0.32), 1.0)
+        }
+    });
+    p.tile(T_FROSTING, move |x, y| {
+        let swirl = (x + y / 2) % 5 == 0;
+        (mul(hex(0xfdf8f2), if swirl { 0.88 } else { 0.96 + hash(x, y, 106) * 0.04 }), 1.0)
+    });
+    p.tile(T_ICE, |x, y| {
+        let crack = (x * 3 + y * 5) % 17 == 0 || (x * 7 - y * 2 + 64) % 23 == 0;
+        let base = mix(hex(0x7fb4e8), hex(0xb8dcff), hash(x / 3, y / 3, 107));
+        (if crack { hex(0xe8f6ff) } else { mul(base, 0.92 + hash(x, y, 108) * 0.1) }, 1.0)
+    });
+    p.tile(T_BRICK, |x, y| (bricks(x, y, hex(0xd8d0c8), hex(0x9a3a2a), 140, 8, 4), 1.0));
+    p.tile(T_ICE_BRICK, |x, y| (bricks(x, y, hex(0xd8ecff), hex(0x6fa2d8), 109, 8, 4), 1.0));
+    let needles = |x: i32, y: i32, seed: u32| -> [f32; 3] {
+        let n = hash(x, y, seed);
+        let dark = hash(x / 2 + y, y / 2, seed + 1) > 0.55;
+        mul(if dark { hex(0x1c4a2a) } else { hex(0x2b6a3a) }, 0.8 + n * 0.35)
+    };
+    p.tile(T_PINE, move |x, y| (needles(x, y, 110), 1.0));
+    p.tile(T_PINE_SNOW, move |x, y| {
+        let edge = 3 + (hash(x / 2, 0, 112) * 3.0) as i32;
+        if y < edge {
+            (mul(hex(0xeef4ff), 0.9 + hash(x, y, 113) * 0.1), 1.0)
+        } else {
+            (needles(x, y, 110), 1.0)
+        }
+    });
+    p.tile(T_CANDY_CANE, |x, y| {
+        let red = (x + y).rem_euclid(8) < 3;
+        let c = if red { hex(0xd8202a) } else { hex(0xfaf6f0) };
+        (mul(c, 0.94 + hash(x, y, 114) * 0.08), 1.0)
+    });
+    let present = |paper: [f32; 3], ribbon: [f32; 3], top: bool| {
+        move |x: i32, y: i32| {
+            let band = (x == 7 || x == 8) || (top && (y == 7 || y == 8));
+            let bow = top && (6..=9).contains(&x) && (6..=9).contains(&y) && (x + y) % 2 == 0;
+            let dots = !band && (x % 4 == 1 && y % 4 == 1);
+            let c = if bow {
+                mul(ribbon, 1.15)
+            } else if band {
+                ribbon
+            } else if dots {
+                mix(paper, [1.0; 3], 0.6)
+            } else {
+                paper
+            };
+            (mul(c, 0.94 + hash(x, y, 115) * 0.08), 1.0)
+        }
+    };
+    p.tile(T_PRESENT_RED, present(hex(0xc8202c), hex(0xf0c840), false));
+    p.tile(T_PRESENT_RED_TOP, present(hex(0xc8202c), hex(0xf0c840), true));
+    p.tile(T_PRESENT_GREEN, present(hex(0x1f7a3a), hex(0xe83040), false));
+    p.tile(T_PRESENT_GREEN_TOP, present(hex(0x1f7a3a), hex(0xe83040), true));
+    p.tile(T_GINGERBREAD, |x, y| {
+        // Cookie bricks with white icing lines.
+        let icing = y % 8 == 0 || (x + if (y / 8) % 2 == 0 { 0 } else { 8 }) % 16 == 0;
+        let crumb = hash(x, y, 116) > 0.85;
+        let c = if icing {
+            hex(0xfdf8f2)
+        } else if crumb {
+            hex(0x7a4420)
+        } else {
+            mul(hex(0xa8622c), 0.9 + hash(x / 2, y / 2, 117) * 0.15)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_GARLAND, |x, y| {
+        // A drooping swag of pine with red berries and gold baubles (alpha outside).
+        let sag = 4.0 + 5.0 * (1.0 - ((x as f32 - 7.5) / 8.0).powi(2));
+        let d = (y as f32 - sag).abs();
+        if d > 2.6 {
+            return ([0.0; 3], 0.0);
+        }
+        let c = if x % 5 == 2 && d < 1.0 {
+            if x % 10 == 2 { hex(0xe02030) } else { hex(0xf0c040) }
+        } else {
+            needles(x, y, 118)
+        };
+        (c, 1.0)
+    });
+    const STOCKING: [&str; 16] = [
+        "................",
+        "....WWWWWWW.....",
+        "....WWWWWWW.....",
+        "....WWWWWWW.....",
+        ".....RRRRR......",
+        ".....RRGRR......",
+        ".....RRRRR......",
+        ".....RRGRR......",
+        ".....RRRRR......",
+        ".....RRRRRR.....",
+        ".....RRGRRRRR...",
+        ".....RRRRRRRRR..",
+        "......RRRRRRRR..",
+        ".......RRRRRR...",
+        "................",
+        "................",
+    ];
+    p.tile(T_STOCKING, |x, y| match STOCKING[y as usize].as_bytes()[x as usize] {
+        b'W' => (mul(hex(0xfaf6f0), 0.92 + hash(x, y, 119) * 0.08), 1.0),
+        b'R' => (mul(hex(0xc8202c), 0.9 + hash(x, y, 120) * 0.12), 1.0),
+        b'G' => (hex(0x2a8a40), 1.0),
+        _ => ([0.0; 3], 0.0),
+    });
+    p.tile(T_WREATH, |x, y| {
+        let d = ((x as f32 - 7.5).powi(2) + (y as f32 - 7.0).powi(2)).sqrt();
+        let bow = y >= 11 && y <= 14 && (x as i32 - 7).abs() + (y as i32 - 12).abs() <= 3 && (x - 7).abs() != 0;
+        if bow {
+            return (hex(0xd8202a), 1.0);
+        }
+        if !(3.5..=7.2).contains(&d) {
+            return ([0.0; 3], 0.0);
+        }
+        let berry = hash(x, y, 121) > 0.84;
+        (if berry { hex(0xe02030) } else { needles(x, y, 122) }, 1.0)
+    });
+    p.tile(T_ICICLE, |x, y| {
+        // Three icicles of different lengths hanging from the top.
+        let len = |cx: i32, l: i32| -> bool {
+            let w = 2 - (y * 2 / l.max(1)).min(2);
+            y < l && (x - cx).abs() <= w.max(0)
+        };
+        if len(3, 14) || len(8, 9) || len(12, 12) {
+            (mix(hex(0xbfe4ff), hex(0xffffff), hash(x, y, 123) * 0.6), 1.0)
+        } else {
+            ([0.0; 3], 0.0)
+        }
+    });
+    p.tile(T_ICE_CRYSTAL, |x, y| {
+        let facet = ((x - 8).abs() + (y - 8).abs()) % 5 == 0;
+        (if facet { hex(0xe8ffff) } else { mix(hex(0x48c8f0), hex(0x9af0ff), hash(x / 2, y / 2, 124)) }, 1.0)
+    });
+    p.tile(T_XSTAR, |x, y| {
+        // A five-pointed star: points around a centre.
+        let (dx, dy) = (x as f32 - 7.5, y as f32 - 8.0);
+        let r = (dx * dx + dy * dy).sqrt();
+        let a = dy.atan2(dx) + std::f32::consts::FRAC_PI_2;
+        let k = (a / std::f32::consts::TAU * 5.0).rem_euclid(1.0);
+        let reach = 3.2 + 4.3 * (1.0 - (k - 0.5).abs() * 2.0).powi(2);
+        if r <= reach {
+            (mix(hex(0xfff2a0), hex(0xffc020), r / 8.0), 1.0)
+        } else {
+            ([0.0; 3], 0.0)
+        }
+    });
+    p.tile(T_WALL_RED, |x, y| {
+        // Deep red with gold stripes and little holly sprigs.
+        let stripe = x % 8 == 0;
+        let holly = (x % 8 == 4) && (y % 8 == 3 || y % 8 == 4);
+        let berry = (x % 8 == 4) && y % 8 == 5;
+        let c = if stripe {
+            hex(0xb8902a)
+        } else if berry {
+            hex(0xff4040)
+        } else if holly {
+            hex(0x2a7a3a)
+        } else {
+            hex(0x7a1420)
+        };
+        (mul(c, 0.92 + hash(x, y, 125) * 0.1), 1.0)
+    });
+    p.tile(T_WALL_PINE, |x, y| {
+        // Green with a white snowflake motif.
+        let (fx, fy) = ((x % 8) - 4, (y % 8) - 4);
+        let flake = (fx == 0 || fy == 0 || fx == fy || fx == -fy) && fx.abs() <= 2 && fy.abs() <= 2;
+        let c = if flake { hex(0xd8ecd8) } else { hex(0x1e4a2e) };
+        (mul(c, 0.92 + hash(x, y, 126) * 0.1), 1.0)
+    });
+    p.tile(T_ROOF_RED, |x, y| {
+        let row = y / 4;
+        let off = if row % 2 == 0 { 0 } else { 2 };
+        let seam = y % 4 == 3 || (x + off) % 4 == 0;
+        (mul(hex(0x8a1c1c), if seam { 0.65 } else { 0.9 + hash(x, y, 127) * 0.15 }), 1.0)
+    });
+    p.tile(T_TOYSHELF, |x, y| {
+        if y < 2 || y >= 14 || y == 7 || y == 8 {
+            return (mul(hex(0x9c7445), 0.85 + hash(x, y, 128) * 0.15), 1.0);
+        }
+        // Toys on two shelves: a ball, a block, a little soldier and a teddy.
+        let shelf = if y < 7 { 0 } else { 1 };
+        let slot = (x / 4 + shelf * 2) % 4;
+        let (lx, ly) = (x % 4, y - if shelf == 0 { 2 } else { 9 });
+        let back = (hex(0x3a2414), 1.0);
+        let c = match slot {
+            0 if (lx - 1).abs() + (ly - 3).abs() <= 2 && lx < 3 => hex(0xe03030),
+            1 if lx < 3 && ly >= 2 => if (lx + ly) % 2 == 0 { hex(0x3a70e0) } else { hex(0xf0d040) },
+            2 if lx == 1 && ly >= 0 => if ly < 2 { hex(0x202020) } else if ly < 4 { hex(0xd02020) } else { hex(0x2040a0) },
+            3 if lx < 3 && ly >= 1 => hex(0xa86a30),
+            _ => return back,
+        };
+        (mul(c, 0.9 + hash(x, y, 129) * 0.15), 1.0)
+    });
+    const SNOWMAN: [&str; 16] = [
+        "................",
+        "................",
+        "................",
+        "....##....##....",
+        "....##....##....",
+        "................",
+        ".......oo.......",
+        ".......ooooo....",
+        "................",
+        "...#........#...",
+        "....#......#....",
+        ".....##..##.....",
+        ".......##.......",
+        "................",
+        "................",
+        "................",
+    ];
+    p.tile(T_SNOWMAN_FACE, move |x, y| match SNOWMAN[y as usize].as_bytes()[x as usize] {
+        b'#' => (hex(0x1a1a20), 1.0),
+        b'o' => (hex(0xf07818), 1.0),
+        _ => (mul(snow, 0.9 + hash(x / 2, y / 2, 102) * 0.08), 1.0),
+    });
+    // Paintings: a snowy cottage at night, a Christmas tree, and a reindeer under the moon.
+    let frame = |x: i32, y: i32| x == 0 || y == 0 || x == 15 || y == 15;
+    p.tile(T_XMAS_ART, move |x, y| {
+        let c = if frame(x, y) {
+            hex(0x6e4a10)
+        } else if y >= 11 {
+            mul(snow, 0.9)
+        } else if (5..=10).contains(&x) && y >= 7 {
+            if (x == 7 || x == 8) && y >= 9 { hex(0x4a2a14) } else if x == 6 && y == 8 { hex(0xffd060) } else { hex(0x8a3020) }
+        } else if (4..=11).contains(&x) && y >= 4 && (x as i32 - 7).abs() <= (y - 3) && y < 7 {
+            mul(snow, 0.95)
+        } else if hash(x, y, 130) > 0.9 {
+            hex(0xffffff)
+        } else {
+            mix(hex(0x10183a), hex(0x2a3870), y as f32 / 11.0)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_XMAS_ART2, move |x, y| {
+        let tree = y >= 3 && y <= 12 && (x as i32 - 7).abs() * 2 <= (y - 2) && (x as i32 - 8).abs() * 2 <= (y - 2);
+        let c = if frame(x, y) {
+            hex(0x6e4a10)
+        } else if y == 2 && (x == 7 || x == 8) {
+            hex(0xffe060)
+        } else if tree {
+            if (x * 3 + y * 5) % 7 == 0 { [hex(0xff3030), hex(0x40a0ff), hex(0xffd030)][(x as usize + y as usize) % 3] } else { hex(0x1f6a30) }
+        } else if y >= 13 {
+            if (x == 7 || x == 8) && y == 13 { hex(0x5a3418) } else { hex(0x7a1420) }
+        } else {
+            mul(hex(0x8a2028), 0.9 + hash(x, y, 131) * 0.1)
+        };
+        (c, 1.0)
+    });
+    p.tile(T_XMAS_ART3, move |x, y| {
+        let moon = (x - 11) * (x - 11) + (y - 4) * (y - 4) <= 5;
+        let body = (4..=9).contains(&x) && (8..=10).contains(&y);
+        let legs = (y == 11 || y == 12) && (x == 4 || x == 9);
+        let neck = x == 10 && (6..=8).contains(&y);
+        let head = (10..=11).contains(&x) && (5..=6).contains(&y);
+        let antler = (y == 3 || y == 4) && (x == 9 || x == 11) || (y == 3 && x == 10);
+        let c = if frame(x, y) {
+            hex(0x6e4a10)
+        } else if body || legs || neck || head {
+            if head && x == 11 && y == 6 { hex(0xff3030) } else { hex(0x6a4020) }
+        } else if antler {
+            hex(0xc8a070)
+        } else if moon {
+            hex(0xfff6d0)
+        } else if y >= 13 {
+            mul(snow, 0.9)
+        } else {
+            mix(hex(0x14204a), hex(0x34407a), y as f32 / 13.0)
+        };
+        (c, 1.0)
+    });
 }

@@ -1,5 +1,5 @@
-//! HAUNTED HOLLOW - a Halloween on-rails shooter for 1-4 players with Wii Remotes.
-//! Rust + Vulkan (ash) + winit, Linux.
+//! HAUNTED HOLLOW - a Halloween (or, with `--level christmas`, Christmas) on-rails
+//! shooter for 1-4 players with Wii Remotes. Rust + Vulkan (ash) + winit, Linux.
 
 mod atlas;
 mod audio;
@@ -7,6 +7,7 @@ mod synth;
 mod game;
 mod highscores;
 mod hud;
+mod level;
 mod mesh;
 mod console_export;
 mod rng;
@@ -17,6 +18,7 @@ mod world;
 mod xr;
 
 use game::{Game, SourceId, SourceInput, State};
+use level::Level;
 use glam::{Mat4, Vec2};
 use std::collections::HashSet;
 use std::time::Instant;
@@ -44,6 +46,7 @@ struct Args {
     export_ps1: Option<String>,
     export_wii: Option<String>,
     vr: bool,
+    level: Level,
 }
 
 fn parse_args() -> Args {
@@ -64,6 +67,7 @@ fn parse_args() -> Args {
         export_ps1: None,
         export_wii: None,
         vr: false,
+        level: Level::default(),
     };
     let mut windowed = false;
     let mut full = false;
@@ -87,6 +91,17 @@ fn parse_args() -> Args {
             "--boss" => a.boss = true,
             "--mute" => a.mute = true,
             "--vr" => a.vr = true,
+            "--level" | "-l" => {
+                let v = val(&mut i);
+                match Level::parse(&v) {
+                    Some(l) => a.level = l,
+                    None => {
+                        let names: Vec<&str> = Level::ALL.iter().map(|l| l.id()).collect();
+                        eprintln!("unknown level: {v:?} (levels: {})", names.join(", "));
+                        std::process::exit(2);
+                    }
+                }
+            }
             "--dump-audio" => a.dump_audio = Some(val(&mut i)),
             "--export-ps1" => a.export_ps1 = Some(val(&mut i)),
             "--export-wii" => a.export_wii = Some(val(&mut i)),
@@ -347,13 +362,18 @@ fn step_game(
     stepped
 }
 
-/// `$XDG_DATA_HOME/haunted-hollow/highscores.txt` (default `~/.local/share/...`).
-fn high_score_path() -> Option<std::path::PathBuf> {
+/// `$XDG_DATA_HOME/haunted-hollow/highscores.txt` (default `~/.local/share/...`) for
+/// Halloween, `highscores-<level>.txt` for the other levels: each level has its own table.
+fn high_score_path(level: Level) -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .filter(|d| !d.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))?;
-    Some(base.join("haunted-hollow").join("highscores.txt"))
+    let file = match level {
+        Level::Halloween => "highscores.txt".to_string(),
+        _ => format!("highscores-{}.txt", level.id()),
+    };
+    Some(base.join("haunted-hollow").join(file))
 }
 
 fn save_ppm(path: &str, cap: &vk::Capture) {
@@ -372,7 +392,7 @@ impl ApplicationHandler for App {
             return;
         }
         let mut attrs = Window::default_attributes()
-            .with_title("Haunted Hollow")
+            .with_title(self.game.level.theme().window)
             .with_inner_size(PhysicalSize::new(self.args.size.0, self.args.size.1));
         if self.args.fullscreen {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
@@ -471,7 +491,7 @@ impl ApplicationHandler for App {
 fn main() {
     let args = parse_args();
     if let Some(dir) = &args.dump_audio {
-        let bank = audio::Bank::build();
+        let bank = audio::Bank::build(args.level);
         match bank.dump(dir) {
             Ok(()) => eprintln!("wrote music and sound effects to {dir}"),
             Err(e) => eprintln!("could not write audio: {e}"),
@@ -488,11 +508,11 @@ fn main() {
         }
     }
     let t0 = Instant::now();
-    let track = track::Track::new();
-    let world = world::generate(&track);
-    eprintln!("world generated in {:.2}s (track {:.0} m)", t0.elapsed().as_secs_f32(), track.total);
-    let mut game = Game::new(track, world, args.debug, args.bots);
-    if let Some(path) = high_score_path() {
+    let track = track::Track::new(args.level);
+    let world = world::generate(&track, args.level);
+    eprintln!("{} world generated in {:.2}s (track {:.0} m)", args.level.id(), t0.elapsed().as_secs_f32(), track.total);
+    let mut game = Game::new(track, world, args.level, args.debug, args.bots);
+    if let Some(path) = high_score_path(args.level) {
         game.set_high_score_file(path);
     }
     let t1 = Instant::now();
@@ -505,7 +525,7 @@ fn main() {
         eprintln!("DEBUG MODE: mouse = player 1 (keys 1-4 pick player), left click shoots, Enter/right click starts,");
         eprintln!("            B = skip to boss, hold Tab = fast forward, P = pause, F3 = debug info, Esc = quit");
     }
-    let audio = if args.mute { audio::Audio::silent() } else { audio::Audio::start() };
+    let audio = if args.mute { audio::Audio::silent() } else { audio::Audio::start(args.level) };
     if args.vr {
         // Single player with the headset's controllers: no window and no Wii Remotes.
         if let Err(e) = xr::run(game, &static_mesh, &audio, args.timescale) {

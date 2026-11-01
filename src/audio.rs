@@ -4,6 +4,7 @@
 //! game still runs silently if no sound device is available. On PipeWire or
 //! PulseAudio systems the ALSA "default" device routes to them automatically.
 
+use crate::level::Level;
 use crate::synth::{self, Buf, RATE};
 use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CString};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -68,7 +69,8 @@ pub struct Bank {
 }
 
 impl Bank {
-    pub fn build() -> Bank {
+    /// Every effect, and the level's music.
+    pub fn build(level: Level) -> Bank {
         let sfx: Vec<Buf> = vec![
             synth::sfx_pop(),
             synth::sfx_shot(),
@@ -92,13 +94,17 @@ impl Bank {
             synth::sfx_boing_deep(),
         ];
         assert_eq!(sfx.len(), SFX_COUNT);
+        let (title, ride, boss, results, victory) = match level {
+            Level::Halloween => (&synth::TITLE, &synth::RIDE, &synth::BOSS, &synth::RESULTS, synth::victory()),
+            Level::Christmas => (&synth::XMAS_TITLE, &synth::XMAS_RIDE, &synth::XMAS_BOSS, &synth::XMAS_RESULTS, synth::xmas_victory()),
+        };
         Bank {
             sfx,
-            title: synth::render_song(&synth::TITLE, true),
-            ride: synth::render_song(&synth::RIDE, true),
-            boss: synth::render_song(&synth::BOSS, true),
-            victory: synth::victory(),
-            results: synth::render_song(&synth::RESULTS, true),
+            title: synth::render_song(title, true),
+            ride: synth::render_song(ride, true),
+            boss: synth::render_song(boss, true),
+            victory,
+            results: synth::render_song(results, true),
             cart: synth::cart_loop(),
         }
     }
@@ -289,7 +295,7 @@ impl Audio {
 
     /// Starts the audio thread (sounds are synthesized there, then played through
     /// ALSA). Returns a silent engine if no sound device is usable.
-    pub fn start() -> Audio {
+    pub fn start(level: Level) -> Audio {
         let (tx, rx) = channel::<Cmd>();
         let (ok_tx, ok_rx) = channel::<Result<(), String>>();
         thread::Builder::new()
@@ -306,7 +312,7 @@ impl Audio {
                     }
                 };
                 let t = std::time::Instant::now();
-                let bank = Bank::build();
+                let bank = Bank::build(level);
                 eprintln!("audio: synthesized music and effects in {:.2}s", t.elapsed().as_secs_f32());
                 run(alsa, Mixer::new(bank), rx);
             })
@@ -439,7 +445,7 @@ mod tests {
     use super::*;
     #[test]
     fn mixer_produces_sound_without_clipping() {
-        let mut m = Mixer::new(Bank::build());
+        let mut m = Mixer::new(Bank::build(Level::Halloween));
         m.command(Cmd::Music(Some(Music::Ride)));
         m.command(Cmd::Play(SoundEvent { sfx: Sfx::Pop, vol: 1.0, pan: 0.5, pitch: 1.2 }));
         let mut buf = vec![0.0; 44100 * 2];
